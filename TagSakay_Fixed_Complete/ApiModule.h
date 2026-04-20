@@ -14,6 +14,19 @@ struct RetryConfig {
   bool exponentialBackoff;
 };
 
+struct RfidDetailResult {
+  bool success = false;
+  bool detailsAvailable = false;
+  bool tagActive = false;
+  bool userAssigned = false;
+  bool userActive = false;
+  int httpCode = 0;
+  String tagId = "";
+  String unitNumber = "";
+  String userName = "";
+  String error = "";
+};
+
 class ApiModule {
 private:
   HTTPClient http;
@@ -46,11 +59,21 @@ public:
   void setRetryConfig(int maxRetries, unsigned long retryDelay, bool exponentialBackoff = true);
   
   // Core endpoints
-  ApiResponse sendScan(const String& tagId, const String& location = "");
+  ApiResponse sendScan(
+    const String& tagId,
+    const String& location = "",
+    const String& eventType = ""
+  );
   ApiResponse sendHeartbeat(bool includeStats = true);
   ApiResponse checkConnection();
   ApiResponse getRegistrationStatus();
   ApiResponse sendQueueOverride(int queueNumber, const String& reason);
+  ApiResponse sendQueueSnapshot(
+    const String& cascade,
+    const String slotValues[],
+    int slotCount,
+    bool operationModeActive
+  );
   ApiResponse reportStatus(const String& status, const String& reason);
   
   // New endpoints
@@ -59,6 +82,7 @@ public:
   ApiResponse getDeviceConfig();
   ApiResponse reportError(const String& errorType, const String& errorMessage);
   ApiResponse syncTime();
+  RfidDetailResult getRfidDetails(const String& tagId);
   
   // Batch operations (for offline queue)
   ApiResponse sendBatchScans(const String scans[], int count);

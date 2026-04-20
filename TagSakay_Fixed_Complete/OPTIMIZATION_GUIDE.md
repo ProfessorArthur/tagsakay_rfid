@@ -116,20 +116,17 @@ Use `StaticJsonDocument` instead of `DynamicJsonDocument` where possible.
 
 ---
 
-### 7. ⚙️ Remove Unused WebSocket Features (Expected: ~10-20 KB savings)
+### 7. ⚙️ Disable Offline Scan Queue (Expected: ~10-15 KB savings)
 
-**If HTTP fallback is sufficient, consider:**
+**If the backend is always available (stable WiFi + Cloudflare Worker), you can remove the offline buffer:**
 
 ```cpp
 // In Config.h
-#define WS_ENABLED false  // Disable WebSocket entirely
+#define FEATURE_OFFLINE_MODE false
+#define MAX_SCAN_QUEUE_SIZE 0
 ```
 
-Or keep but reduce buffer:
-
-```cpp
-#define WS_PING_INTERVAL_MS 60000  // Less frequent pings
-```
+Then prune the queue handling code paths in `ApiModule.cpp` and `TagSakay_Fixed_Complete.ino` (search for `offlineMode` and `scanQueue`).
 
 ---
 
@@ -230,7 +227,7 @@ Add to platformio.ini or before ArduinoJson include:
 
 ### Phase 3: Emergency Only
 
-7. 💣 Consider removing WebSocket OR TFT display
+7. 💣 Consider removing LED matrix or TFT display modules
 
 ---
 
@@ -248,14 +245,14 @@ Target: Get below **1,180,000 bytes (90%)**
 
 ## Current File Sizes (Estimated)
 
-| Component           | Size    | Can Reduce?               |
-| ------------------- | ------- | ------------------------- |
-| Core ESP32 libs     | ~200 KB | ❌ No                     |
-| WiFi/HTTP/WebSocket | ~300 KB | ⚠️ Yes (remove WS)        |
-| TFT Display         | ~100 KB | ⚠️ Yes (simplify/remove)  |
-| ArduinoJson         | ~50 KB  | ✅ Yes (optimize)         |
-| RFID (PN532)        | ~80 KB  | ⚠️ Yes (simplify)         |
-| Your code           | ~533 KB | ✅ Yes (logging, strings) |
+| Component       | Size    | Can Reduce?               |
+| --------------- | ------- | ------------------------- |
+| Core ESP32 libs | ~200 KB | ❌ No                     |
+| WiFi/HTTP stack | ~260 KB | ⚙️ Maybe (tune polling)   |
+| TFT Display     | ~100 KB | ⚠️ Yes (simplify/remove)  |
+| ArduinoJson     | ~50 KB  | ✅ Yes (optimize)         |
+| RFID (PN532)    | ~80 KB  | ⚠️ Yes (simplify)         |
+| Your code       | ~533 KB | ✅ Yes (logging, strings) |
 
 ---
 

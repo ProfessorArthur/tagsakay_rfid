@@ -41,8 +41,14 @@
 
 // UART Communication Pins
 #define UART_RX 32
-#define UART_TX 33
+#define UART_TX -1 // Disabled to free up Pin 33 for SD Card
 #define UART_BAUD 115200
+
+// SD Card Pins
+#define SD_CS_PIN   22
+#define SD_MOSI_PIN 21
+#define SD_MISO_PIN 35 // Changed from 2 to 35 (Input-only pin) to prevent boot conflict
+#define SD_SCK_PIN  33
 
 // =======================
 // Display Settings
@@ -58,12 +64,18 @@
 // =======================
 
 #define ROW_HEIGHT      8   // pixels between rows
-#define START_Y         1   // top margin
+#define START_Y         0   // top margin (Changed from 1 to 0 to fit 8 rows)
 #define DIGIT_WIDTH     4   // width of each digit (3px + 1px gap)
 #define PIPE_WIDTH      2   // width for pipe separator (1px + 1px gap)
 #define MARGIN          1   // left margin
 #define NUMBERS_PER_ROW 5   // numbers per row
 #define MAX_ROWS        8   // total rows for cascade
+#define MAX_CASCADE_ENTRIES 40
+#define MAX_DIGITS_PER_ENTRY 3
+
+// Small visual adjustment to shift LED numbers right on physical panels
+// Set this to 0 to disable; increase for more shift
+#define LED_MATRIX_SCOOT_X 1
 
 // =======================
 // Color Definitions
@@ -81,6 +93,8 @@
 #define COLOR_AMBER   0xFD20
 #define COLOR_PURPLE  0x780F
 #define COLOR_PINK    0xFE19
+// Additional shades
+#define COLOR_DARK_BLUE 0x0008
 
 // Status colors
 #define COLOR_SUCCESS COLOR_GREEN
@@ -126,6 +140,7 @@ struct DisplayState {
   int queueNumber;
   int* queueList;
   int queueListSize;
+  String* queueUnitList;
 };
 
 // =======================

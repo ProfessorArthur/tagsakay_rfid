@@ -15,6 +15,10 @@
 #include "PixelFont.h"
 #include "Animations.h"
 #include "UARTHandler.h"
+#include "SDCardModule.h"
+
+// Extern declarations
+extern bool operationModeActive;
 
 // Global state variable definitions
 DisplayState currentDisplay = {
@@ -28,7 +32,8 @@ DisplayState currentDisplay = {
   0,
   0,
   nullptr,
-  0
+  0,
+  nullptr
 };
 
 String deviceId = "";
@@ -39,6 +44,7 @@ unsigned long lastUpdate = 0;
 unsigned long lastHeartbeat = 0;
 int animationFrame = 0;
 unsigned long lastAnimationUpdate = 0;
+unsigned long lastCascadeRefresh = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -53,6 +59,15 @@ void setup() {
   
   // Initialize UART communication
   initializeUART();
+
+  // Initialize SD Card
+  if (sdCard.initialize()) {
+    Serial.println("SD Card initialized successfully");
+    // Optional: Log boot to SD
+    sdCard.appendFile("/system.log", "System Booted\n");
+  } else {
+    Serial.println("SD Card initialization failed");
+  }
   
   // Show welcome screen
   displayWelcomeScreen();
@@ -71,10 +86,7 @@ void loop() {
   // Process incoming UART commands
   processUARTCommand();
   
-  // Handle display updates based on mode
-  updateDisplay();
-  
-  // Handle scrolling text
+  // Handle scrolling text and update display only when position changes
   if (currentDisplay.scrolling && (currentMillis - lastUpdate > SCROLL_SPEED)) {
     lastUpdate = currentMillis;
     currentDisplay.scrollPosition--;
@@ -83,6 +95,9 @@ void loop() {
     if (currentDisplay.scrollPosition < -textWidth) {
       currentDisplay.scrollPosition = PANEL_RES_X;
     }
+    
+    // Update display after scroll position changes (with buffer flip)
+    updateDisplay();
   }
   
   // Handle animation updates
@@ -93,7 +108,7 @@ void loop() {
   }
   
   // Check for display timeout
-  if (currentDisplay.duration > 0) {
+  if (currentDisplay.duration > 0 && !operationModeActive) {
     if (currentMillis - currentDisplay.startTime > currentDisplay.duration) {
       Serial.println("Display timeout - returning to idle");
       displayIdleScreen();
@@ -106,5 +121,11 @@ void loop() {
     Serial.println("Matrix alive - Mode: " + String(currentDisplay.mode));
   }
   
-  delay(10);
+  // Periodic cascade refresh to prevent display corruption
+  if (currentDisplay.mode == MODE_CASCADE && millis() - lastCascadeRefresh > 1000) {
+    redrawCascade();
+    lastCascadeRefresh = millis();
+  }
+  
+  delay(1);
 }

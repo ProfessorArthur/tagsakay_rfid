@@ -44,12 +44,14 @@
     </div>
 
     <div v-else class="relative overflow-x-auto max-h-96 overflow-y-auto">
-      <table class="w-full text-sm text-left text-gray-500">
+      <table class="w-full text-sm text-left text-gray-500 responsive-table">
         <thead class="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0">
           <tr>
             <th scope="col" class="px-4 py-3">Time</th>
             <th scope="col" class="px-4 py-3">Tag ID</th>
+            <th scope="col" class="px-4 py-3">Device</th>
             <th scope="col" class="px-4 py-3">Location</th>
+            <th scope="col" class="px-4 py-3">Seen</th>
             <th scope="col" class="px-4 py-3">Actions</th>
           </tr>
         </thead>
@@ -59,10 +61,20 @@
             :key="scan.id"
             class="border-b transition-colors duration-300 hover:bg-green-50"
           >
-            <td class="px-4 py-3">{{ formatTime(scan.scanTime) }}</td>
-            <td class="px-4 py-3 font-mono">{{ scan.tagId }}</td>
-            <td class="px-4 py-3">{{ scan.location || "Unknown" }}</td>
-            <td class="px-4 py-3">
+            <td class="px-4 py-3" data-label="Time">
+              {{ formatTime(scan.lastSeen) }}
+            </td>
+            <td class="px-4 py-3 font-mono" data-label="Tag">
+              {{ scan.tagId }}
+            </td>
+            <td class="px-4 py-3" data-label="Device">
+              {{ scan.deviceId || "Unknown" }}
+            </td>
+            <td class="px-4 py-3" data-label="Location">
+              {{ scan.location || "Unknown" }}
+            </td>
+            <td class="px-4 py-3" data-label="Seen">{{ scan.scanCount }}</td>
+            <td class="px-4 py-3" data-label="Actions">
               <button
                 @click="selectTag(scan.tagId)"
                 class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md text-xs font-semibold transition-colors duration-150"
@@ -78,8 +90,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, defineEmits } from "vue";
-import rfidService, { type RfidScan } from "../services/rfid";
+import { onMounted, onUnmounted, ref } from "vue";
+import rfidService, { type UnregisteredRfidScan } from "../services/rfid";
+import {
+  createAdaptivePoller,
+  type AdaptivePoller,
+} from "../utils/adaptivePolling";
 
 const props = defineProps({
   refreshInterval: {
@@ -91,12 +107,12 @@ const props = defineProps({
 const emit = defineEmits(["selectTag"]);
 
 // Reactive state
-const scans = ref<any[]>([]);
+const scans = ref<UnregisteredRfidScan[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
+const lastScanSignature = ref("");
 
-// Polling interval
-let pollingInterval: number | null = null;
+let poller: AdaptivePoller | null = null;
 
 // Format timestamp to readable format
 const formatTime = (timestamp: string) => {
@@ -104,29 +120,44 @@ const formatTime = (timestamp: string) => {
   return date.toLocaleTimeString();
 };
 
+const buildScanSignature = (items: UnregisteredRfidScan[]): string => {
+  return items
+    .map(
+      (scan) =>
+        `${scan.id}:${scan.tagId}:${scan.lastSeen}:${scan.scanCount}:${
+          scan.deviceId ?? ""
+        }`
+    )
+    .join("|");
+};
+
 // Function to get recent unregistered scans
-const getRecentUnregisteredScans = async () => {
+const getRecentUnregisteredScans = async ({
+  silent = false,
+  forceRefresh = false,
+}: {
+  silent?: boolean;
+  forceRefresh?: boolean;
+} = {}) => {
   try {
-    loading.value = true;
+    if (!silent) {
+      loading.value = true;
+    }
     error.value = null;
 
-    const response = await rfidService.getRecentUnregisteredScans();
+    const response = await rfidService.getRecentUnregisteredScans({
+      limit: 10,
+      sinceMinutes: 120,
+      forceRefresh,
+    });
 
-    if (response.data && Array.isArray(response.data)) {
-      // Add new scans without removing old ones, but avoid duplicates
-      const existingIds = new Set(scans.value.map((scan) => scan.id));
-      const newScans = response.data.filter(
-        (scan: RfidScan) => !existingIds.has(scan.id)
-      );
+    if (response.success && response.data && Array.isArray(response.data)) {
+      const nextScans = response.data.slice(0, 10);
+      const nextSignature = buildScanSignature(nextScans);
 
-      // Add new scans to the beginning of the array
-      if (newScans.length > 0) {
-        scans.value = [...newScans, ...scans.value];
-
-        // Limit the total number of displayed scans
-        if (scans.value.length > 10) {
-          scans.value = scans.value.slice(0, 10);
-        }
+      if (nextSignature !== lastScanSignature.value) {
+        scans.value = nextScans;
+        lastScanSignature.value = nextSignature;
       }
     }
   } catch (err: any) {
@@ -134,7 +165,9 @@ const getRecentUnregisteredScans = async () => {
       err.response?.data?.message || "Failed to fetch unregistered scans";
     console.error("Error fetching unregistered RFID scans:", err);
   } finally {
-    loading.value = false;
+    if (!silent) {
+      loading.value = false;
+    }
   }
 };
 
@@ -145,17 +178,30 @@ const selectTag = (tagId: string) => {
 
 // Start polling when component is mounted
 onMounted(() => {
-  getRecentUnregisteredScans();
+  void getRecentUnregisteredScans({ forceRefresh: true });
 
-  pollingInterval = setInterval(() => {
-    getRecentUnregisteredScans();
-  }, props.refreshInterval) as unknown as number;
+  poller = createAdaptivePoller(
+    async () => {
+      await getRecentUnregisteredScans({
+        silent: true,
+        forceRefresh: true,
+      });
+    },
+    {
+      baseIntervalMs: props.refreshInterval,
+      maxIntervalMs: Math.max(props.refreshInterval * 6, 30000),
+      pauseWhenHidden: true,
+    }
+  );
+
+  poller.start();
 });
 
 // Stop polling when component is unmounted
 onUnmounted(() => {
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
+  if (poller) {
+    poller.stop();
+    poller = null;
   }
 });
 </script>

@@ -2,6 +2,7 @@ import axios, { AxiosError } from "axios";
 import { API_CONFIG } from "../config/env";
 
 const API_URL = API_CONFIG.BASE_URL;
+const isDevMode = import.meta.env.DEV;
 
 // Response format from backend-workers
 interface ApiResponse<T = any> {
@@ -18,8 +19,10 @@ const apiClient = axios.create({
   baseURL: API_URL,
   headers: {
     "Content-Type": "application/json",
+    Accept: "application/json",
   },
   timeout: API_CONFIG.TIMEOUT,
+  decompress: true, // Enable automatic decompression
 });
 
 // Add request interceptor to include auth token
@@ -39,6 +42,21 @@ apiClient.interceptors.request.use(
 // Add response interceptor to handle common errors and new response format
 apiClient.interceptors.response.use(
   (response) => {
+    // Debug logging for troubleshooting
+    if (isDevMode) {
+      console.log("API Response:", {
+        url: response.config.url,
+        status: response.status,
+        contentType: response.headers["content-type"],
+        dataType: typeof response.data,
+        dataLength: response.data ? String(response.data).length : 0,
+        dataPreview:
+          typeof response.data === "string"
+            ? response.data.substring(0, 100)
+            : response.data,
+      });
+    }
+
     // Backend-workers uses { success, data, message } format
     // Transform to maintain backward compatibility
     if (response.data && typeof response.data === "object") {
@@ -68,6 +86,25 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error: AxiosError<ApiResponse>) => {
+    // Enhanced error logging
+    if (isDevMode) {
+      console.error("API Error:", {
+        url: error.config?.url,
+        method: error.config?.method,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        contentType: error.response?.headers?.["content-type"],
+        responseType: typeof error.response?.data,
+        responseLength: error.response?.data
+          ? String(error.response?.data).length
+          : 0,
+        responsePreview: error.response?.data
+          ? String(error.response?.data).substring(0, 200)
+          : "No response data",
+        message: error.message,
+      });
+    }
+
     const apiResponse = error.response?.data;
 
     // Handle 401 Unauthorized

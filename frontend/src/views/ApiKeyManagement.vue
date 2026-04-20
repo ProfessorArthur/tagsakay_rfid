@@ -42,7 +42,7 @@ const loadApiKeys = async () => {
 
   try {
     const response = await apiKeyService.listApiKeys();
-    apiKeys.value = response || [];
+    apiKeys.value = response.data || [];
   } catch (err: any) {
     error.value = err.response?.data?.message || "Failed to load API keys.";
   } finally {
@@ -84,7 +84,7 @@ const createApiKey = async () => {
     // Extract the API key and push to list
     if (response.success && response.data) {
       const newKey = response.data;
-      createdKey.value = newKey.apiKey; // Backend returns apiKey, not key
+      createdKey.value = newKey.key; // Backend returns key field
 
       // Add to list without the full API key
       apiKeys.value.push({
@@ -189,8 +189,8 @@ const copyToClipboard = (text: string) => {
 
 <template>
   <div>
-    <div class="flex items-center mb-2">
-      <button class="btn btn-ghost btn-circle mr-2" @click="goBack">
+    <div class="flex items-center gap-2 flex-wrap mb-2">
+      <button class="btn btn-ghost btn-circle" @click="goBack">
         <svg
           xmlns="http://www.w3.org/2000/svg"
           class="h-6 w-6"
@@ -209,8 +209,10 @@ const copyToClipboard = (text: string) => {
       <h1 class="text-3xl font-bold">API Key Management</h1>
     </div>
 
-    <div class="flex justify-between mb-6">
-      <div>
+    <div
+      class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-6"
+    >
+      <div class="flex gap-2">
         <router-link to="/devices" class="btn btn-outline btn-sm">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -229,7 +231,10 @@ const copyToClipboard = (text: string) => {
           Manage Devices
         </router-link>
       </div>
-      <button class="btn btn-primary" @click="isCreateModalOpen = true">
+      <button
+        class="btn btn-primary self-start md:self-auto w-full md:w-auto"
+        @click="isCreateModalOpen = true"
+      >
         <svg
           xmlns="http://www.w3.org/2000/svg"
           class="h-5 w-5 mr-2"
@@ -341,17 +346,17 @@ const copyToClipboard = (text: string) => {
     </div>
 
     <div v-else class="overflow-x-auto">
-      <table class="table table-zebra">
+      <table class="table table-zebra responsive-table">
         <thead>
           <tr>
             <th>Name</th>
             <th>Type</th>
             <th>Device ID</th>
-            <th>MAC Address</th>
+            <th class="hidden lg:table-cell">MAC Address</th>
             <th>Prefix</th>
             <th>Permissions</th>
             <th>Status</th>
-            <th>Last Used</th>
+            <th class="hidden lg:table-cell">Last Used</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -360,8 +365,10 @@ const copyToClipboard = (text: string) => {
             <td colspan="9" class="text-center">No API keys found</td>
           </tr>
           <tr v-for="apiKey in apiKeys" :key="apiKey.id">
-            <td>{{ apiKey.name }}</td>
-            <td>
+            <td data-label="Name" class="whitespace-normal break-words">
+              {{ apiKey.name }}
+            </td>
+            <td data-label="Type">
               <span
                 class="badge"
                 :class="apiKey.macAddress ? 'badge-primary' : 'badge-secondary'"
@@ -369,10 +376,14 @@ const copyToClipboard = (text: string) => {
                 {{ apiKey.macAddress ? "Device" : "Service" }}
               </span>
             </td>
-            <td>{{ apiKey.deviceId }}</td>
-            <td>{{ apiKey.macAddress || "N/A" }}</td>
-            <td>{{ apiKey.prefix }}</td>
-            <td>
+            <td data-label="Device ID" class="whitespace-normal break-words">
+              {{ apiKey.deviceId }}
+            </td>
+            <td data-label="MAC Address" class="hidden lg:table-cell">
+              {{ apiKey.macAddress || "N/A" }}
+            </td>
+            <td data-label="Prefix">{{ apiKey.prefix }}</td>
+            <td data-label="Permissions">
               <div class="flex flex-wrap gap-1">
                 <template v-if="Array.isArray(apiKey.permissions)">
                   <!-- Check if permissions are individual characters -->
@@ -412,7 +423,7 @@ const copyToClipboard = (text: string) => {
                 </template>
               </div>
             </td>
-            <td>
+            <td data-label="Status">
               <span
                 class="badge"
                 :class="apiKey.isActive ? 'badge-success' : 'badge-error'"
@@ -420,14 +431,14 @@ const copyToClipboard = (text: string) => {
                 {{ apiKey.isActive ? "Active" : "Inactive" }}
               </span>
             </td>
-            <td>
+            <td data-label="Last Used" class="hidden lg:table-cell">
               {{
                 apiKey.lastUsed
                   ? new Date(apiKey.lastUsed).toLocaleString()
                   : "Never"
               }}
             </td>
-            <td>
+            <td data-label="Actions">
               <div class="flex gap-2">
                 <button
                   class="btn btn-sm"

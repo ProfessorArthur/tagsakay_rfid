@@ -1,30 +1,41 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
-import { authMiddleware, requireRole } from "../middleware/auth";
-import { users, rfids } from "../db/schema";
-import { hashPassword } from "../lib/auth";
-import type { Database } from "../db";
+import { eq, inArray } from "drizzle-orm";
+import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { users, rfids } from "../db/schema.js";
+import { hashPassword } from "../lib/auth.js";
+import type { Database } from "../db/index.js";
 
-type Variables = {
-  db: Database;
-  user: {
-    id: number;
-    email: string;
-    role: "admin" | "superadmin" | "driver";
+type Env = {
+  Bindings: {
+    DATABASE_URL: string;
+    JWT_SECRET: string;
+    SESSION_SECRET: string;
+  };
+  Variables: {
+    db: Database;
+    user: {
+      id: number;
+      email: string;
+      role: "admin" | "superadmin" | "driver";
+    };
   };
 };
 
-const app = new Hono<{ Variables: Variables }>();
+const app = new Hono<Env>();
 
 /**
  * GET /api/users
  * Get all users (admin only)
+ * Optimized to avoid N+1 query problem
  */
 app.get("/", authMiddleware, requireRole("admin", "superadmin"), async (c) => {
   try {
     const db = c.get("db");
+    const includeRfidsParam =
+      c.req.query("includeRfids") ?? c.req.query("includeRfidTags") ?? "true";
+    const includeRfids = includeRfidsParam.toLowerCase() !== "false";
 
-    // Get all users with their RFID tags
+    // Get all users
     const usersList = await db
       .select({
         id: users.id,
@@ -38,24 +49,57 @@ app.get("/", authMiddleware, requireRole("admin", "superadmin"), async (c) => {
       })
       .from(users);
 
-    // Get RFID tags for each user
-    const usersWithRfids = await Promise.all(
-      usersList.map(async (user) => {
-        const userRfids = await db
-          .select()
-          .from(rfids)
-          .where(eq(rfids.userId, user.id));
+    type UserRfidTag = {
+      id: string;
+      tagId: string;
+      userId: number | null;
+      isActive: boolean | null;
+      lastScanned: Date | null;
+    };
 
-        return {
-          ...user,
-          rfidTags: userRfids,
-        };
+    const rfidsByUser: Record<number, UserRfidTag[]> = {};
+
+    if (includeRfids && usersList.length > 0) {
+      const userIds = usersList.map((user: (typeof usersList)[number]) =>
+        user.id
+      );
+
+      // Scope RFID query to listed users only (prevents loading unrelated tags)
+      const scopedRfids = await db
+        .select({
+          id: rfids.id,
+          tagId: rfids.tagId,
+          userId: rfids.userId,
+          isActive: rfids.isActive,
+          lastScanned: rfids.lastScanned,
+        })
+        .from(rfids)
+        .where(inArray(rfids.userId, userIds));
+
+      // Group RFID tags by userId
+      for (const rfid of scopedRfids) {
+        if (rfid.userId === null) {
+          continue;
+        }
+        if (!rfidsByUser[rfid.userId]) {
+          rfidsByUser[rfid.userId] = [];
+        }
+        rfidsByUser[rfid.userId].push(rfid);
+      }
+    }
+
+    // Combine users with their RFID tags
+    const usersWithRfids = usersList.map(
+      (user: (typeof usersList)[number]) => ({
+      ...user,
+      rfidTags: includeRfids ? rfidsByUser[user.id] || [] : undefined,
       })
     );
 
     return c.json({
       success: true,
       count: usersWithRfids.length,
+      includeRfids,
       data: usersWithRfids,
     });
   } catch (error) {
@@ -181,7 +225,7 @@ app.post("/", authMiddleware, requireRole("admin", "superadmin"), async (c) => {
     // Hash the password
     const hashedPassword = await hashPassword(password);
 
-    // Create new user
+    // Create new user - automatically verify users created by admins
     const [newUser] = await db
       .insert(users)
       .values({
@@ -190,6 +234,7 @@ app.post("/", authMiddleware, requireRole("admin", "superadmin"), async (c) => {
         password: hashedPassword,
         role: role || "driver",
         isActive: isActive !== undefined ? isActive : true,
+        isEmailVerified: true, // Auto-verify users created by admins
       })
       .returning({
         id: users.id,
@@ -197,6 +242,7 @@ app.post("/", authMiddleware, requireRole("admin", "superadmin"), async (c) => {
         email: users.email,
         role: users.role,
         isActive: users.isActive,
+        isEmailVerified: users.isEmailVerified,
         createdAt: users.createdAt,
       });
 

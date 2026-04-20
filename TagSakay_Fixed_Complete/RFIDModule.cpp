@@ -199,7 +199,17 @@ void handleRFIDLoop() {
           Serial.println("✓ Registration tag match! Completing registration...");
 
           indicateRegistrationTagDetected();
-          updateScanSection(tagId, "REGISTERED", "Registration confirmed", TFT_GREEN);
+          updateRfidScanDetails(
+            tagId,
+            "",
+            "",
+            true,
+            false,
+            false,
+            "Registration confirmed",
+            TFT_GREEN,
+            ""
+          );
           sendToLEDMatrix("REG", "SUCCESS", tagId.substring(0, 8));
 
           registrationMode = false;
@@ -212,13 +222,33 @@ void handleRFIDLoop() {
           indicateReady();
         } else {
           Serial.println("✗ Tag mismatch! Expected: " + expectedRegistrationTagId + ", Got: " + tagId);
-          updateScanSection(tagId, "WRONG TAG", "Not the expected tag", TFT_RED);
+          updateRfidScanDetails(
+            tagId,
+            "",
+            "",
+            false,
+            false,
+            false,
+            "Wrong tag",
+            TFT_RED,
+            "Not the expected tag"
+          );
           sendToLEDMatrix("REG", "MISMATCH", "");
           blinkError(2);
         }
       } else {
         Serial.println("⚠ Registration mode active but no expected tag set");
-        updateScanSection(tagId, "REG ERROR", "No expected tag", TFT_ORANGE);
+        updateRfidScanDetails(
+          tagId,
+          "",
+          "",
+          false,
+          false,
+          false,
+          "Registration error",
+          TFT_ORANGE,
+          "No expected tag"
+        );
         sendToLEDMatrix("REG", "ERROR", "");
       }
     } else {

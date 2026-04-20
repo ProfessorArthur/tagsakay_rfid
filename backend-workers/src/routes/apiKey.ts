@@ -1,14 +1,15 @@
 import { Hono } from "hono";
-import { authMiddleware, requireRole } from "../middleware/auth";
-import { apiKeys, users } from "../db/schema";
+import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { apiKeys, users } from "../db/schema.js";
 import { eq, desc } from "drizzle-orm";
-import type { Database } from "../db";
-import { generateApiKey, hashApiKey } from "../lib/auth";
+import type { Database } from "../db/index.js";
+import { generateApiKey, hashApiKey } from "../lib/auth.js";
 
 type Env = {
   Bindings: {
     DATABASE_URL: string;
     JWT_SECRET: string;
+    SESSION_SECRET: string;
   };
   Variables: {
     db: Database;

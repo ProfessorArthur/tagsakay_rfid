@@ -1,11 +1,11 @@
 /*
- * TagSakay RFID Scanner - Production Ready Version with WebSocket
+ * TagSakay RFID Scanner - Production Ready Version (HTTP Polling)
  * 
  * Modular architecture with comprehensive error handling,
- * state management, automatic recovery, and real-time WebSocket communication
+ * state management, automatic recovery, and command polling over HTTP.
  * 
- * Version: 3.0.0
- * Features: WebSocket + HTTP fallback, Durable Objects integration
+ * Version: 3.1.0
+ * Features: REST-first workflow with periodic command polling.
  */
 
 #include "Config.h"
@@ -14,22 +14,51 @@
 #include "RFIDModule.h"
 #include "KeypadModule.h"
 #include "UARTModule.h"
+#include "BuzzerModule.h"
 #include "ApiModule.h"
-#include "WebSocketModule.h"
+#include "HTTPPolling.h"
+#include <map>
+#include <cstring>
+#include <SPIFFS.h>
+#include <FS.h>
+
+namespace {
+  const char* EXPECTED_DEVICE_ID = "80F3DA4C46A4";
+  bool deviceIdOverrideLogged = false;
+
+  String resolveDeviceId() {
+    String detected = getDeviceMacAddress();
+    String normalized = detected;
+    normalized.toUpperCase();
+
+    if (!normalized.equals(EXPECTED_DEVICE_ID)) {
+      if (!deviceIdOverrideLogged) {
+        Serial.print("[SYSTEM] Detected MAC ");
+        Serial.print(normalized);
+        Serial.print(" - overriding with expected device ID ");
+        Serial.println(EXPECTED_DEVICE_ID);
+        deviceIdOverrideLogged = true;
+      }
+      return String(EXPECTED_DEVICE_ID);
+    }
+
+    return normalized;
+  }
+  }
 
 // Configuration instances (definitions)
 WiFiConfig wifiConfig = {
-  "SSID",
-  "Password",
-  10,
-  5000
+  "SSID",           // Replace with your WiFi SSID
+  "Password",       // Replace with your WiFi password
+  10,               // Max reconnection attempts
+  5000              // Retry delay (ms)
 };
 
 ServerConfig serverConfig = {
-  "http://192.168.1.73:8787",  // Cloudflare Workers backend (HTTP fallback)
-  "de271a_09e103534510b7bf7700d847994c8c6c3433e4214598912db1773a4108df1852",
-  10000,
-  "Entrance Gate"
+  "https://tagsakay-api-production.maskedmyles.workers.dev",  // Production backend URL
+  "",  // Device API key (set in Config.h or via Serial menu)
+  10000,  // HTTP timeout (ms)
+  "Entrance Gate"  // Device location (configurable)
 };
 
 NTPConfig ntpConfig = {
@@ -66,42 +95,92 @@ SystemStatus systemStatus = {
 String deviceId = "";
 String lastScannedTag = "";
 bool registrationMode = false;
+bool operationMode = false; // New Operation Mode flag
+bool queuePanelVisible = false; // Queue panel display state
+std::map<String, int> queueStates; // Queue state tracking
+std::map<String, String> queueIdentifiers; // Map tagId -> Unit Number/Identifier
+#define MAX_QUEUE_SLOTS 40
+String queueSlots[MAX_QUEUE_SLOTS]; // Fixed slots for queue display
+int nextQueueSlot = 0; // Next slot to insert into
 String expectedRegistrationTagId = "";
 unsigned long lastRegistrationCheck = 0;
 unsigned long registrationModeStartTime = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastScanTime = 0;
+unsigned long lastNetworkCheck = 0;
+unsigned long scanCooldownUntil = 0;
+unsigned long heartbeatFlashUntil = 0;
+const unsigned long NETWORK_CHECK_INTERVAL = 2000; // Check network every 2 seconds
+const unsigned long QUEUE_TRANSITION_FLASH_MS = 150; // Visual delay for WAITING -> ONGOING -> CLEAR
+const unsigned long SCAN_POST_COOLDOWN_MS = 200;
+const unsigned long HEARTBEAT_FLASH_MS = 100;
 
 // Registration mode keypad buffer (renamed to avoid conflict with KeypadModule.cpp)
 String registrationKeypadBuffer = "";
 unsigned long lastRegistrationKeypadInput = 0;
 #define KEYPAD_BUFFER_TIMEOUT 3000  // Clear buffer after 3 seconds of no input
 
+struct RfidDetailState {
+  bool detailsAvailable = false;
+  bool lookupInProgress = false;
+  bool lookupFailed = false;
+  bool tagActive = false;
+  bool userAssigned = false;
+  bool userActive = false;
+  int lastHttpCode = 0;
+  String tagId = "";
+  String unitNumber = "";
+  String userName = "";
+  String error = "";
+};
+
+RfidDetailState lastRfidDetails;
+
+struct RfidDisplayStatus {
+  String label;
+  uint16_t color;
+  String secondary;
+};
+
 // Module instances (using enhanced classes)
 NetworkModule networkModule;
 RFIDModule rfidModule;
-KeypadModule keypadModule;
 ApiModule apiModule;
-WebSocketModule wsModule;  // New: WebSocket module
+HTTPPollingModule pollingModule;
 
 // System state
 bool systemReady = false;
-bool offlineMode = false;
-bool useWebSocket = WS_ENABLED;  // Can be toggled at runtime
+bool offlineMode = true;
+bool servicesActivated = false;
+bool activationInProgress = false;
 
 // Function declarations
 bool initializeSystem();
 void handleSystemError(const char* component, const char* error);
 void handleRFIDScanning();
-void handleKeypadInputNew();
 void sendPeriodicHeartbeat();
 void checkNetworkConnection();
 void checkSerialCommands();
+void resetRfidDetailState();
+void updateRfidDetailState(const RfidDetailResult& result);
+struct RfidDisplayStatus;
+RfidDisplayStatus determineRfidDisplayStatus(const RfidDetailState& state);
+RfidDisplayStatus lookupRfidDetails(const String& tagId);
+void renderRfidDetailsForStatus(const RfidDisplayStatus& status, const String& fallbackTagId = "");
+void renderRfidDetailsForStatus(const String& label, uint16_t color, const String& secondary, const String& fallbackTagId = "");
+void updateStatusSectionFromDetail(const RfidDisplayStatus& status);
+bool activateOnlineServices(bool showFeedback = true);
+String handleQueueScan(const String& tagId);
+// Forward declarations for queue override helpers (defined later in this file)
+bool overrideQueueUnitByIdentifier(const String& oldIdentifier, const String& newIdentifier, bool firstOnly = true);
+void setQueueUnitOverrideColor(const String& identifier, const String& overrideType);
+bool overrideQueueUnitAtSlot(int slotIndex, const String& expectedOld, const String& newIdentifier);
+bool overrideQueueUnit(const String& oldIdentifier, const String& newIdentifier, bool firstOnly = true);
+bool isOverrideActive();
 
-// WebSocket callback declarations
-void handleScanResponse(JsonDocument& doc);
-void handleConfigUpdate(JsonDocument& doc);
-void handleWSConnectionStatus(bool connected);
+// SPIFFS functions for offline tag data storage
+void saveTagData(const String& tagId, const String& unitNumber, const String& userName);
+bool loadTagData(const String& tagId, String& unitNumber, String& userName);
 
 void setup(void) {
   Serial.begin(115200);
@@ -126,19 +205,23 @@ void setup(void) {
     Serial.println("\n[SYSTEM] All modules initialized successfully");
     Serial.println("[SYSTEM] System ready for operation");
     Serial.println("[SYSTEM] Press 'A' on keypad for menu\n");
+    Serial.println("[SYSTEM] Manual activation required before network activity\n");
     
     systemReady = true;
-    indicateReady();
-    updateScanSection("", "", "", TFT_WHITE);
-    sendToLEDMatrix("STATUS", "READY", "");
+    indicateReady();  // Now clears scan section internally
+    updateStatusSection("WAITING ACTIVATION", TFT_CYAN);
+    updateFooter("Press A to open menu");
+    sendToLEDMatrix("STATUS", "WAITING", "");
   }
+
+  resetRfidDetailState();
 }
 
 bool initializeSystem() {
   bool allSuccess = true;
-  
+
   LOG_INFO("System initialization started");
-  
+
   // 1. Initialize Display (first for visual feedback)
   Serial.println("[1/6] Initializing Display...");
   initializeTFT();
@@ -150,48 +233,39 @@ bool initializeSystem() {
   updateStatusSection("UART: OK", TFT_GREEN);
   delay(500);
 
-  // 3. Initialize Keypad
-  Serial.println("[3/6] Initializing Keypad...");
-  if (!keypadModule.initialize()) {
-    handleSystemError("KEYPAD", "Initialization failed");
-    allSuccess = false;
+  // 3. Initialize Buzzer (optional hardware add-on)
+  Serial.println("[3/6] Initializing Buzzer...");
+  if (initializeBuzzer()) {
+    updateStatusSection("Buzzer: OK", TFT_GREEN);
+    Serial.println("[BUZZER] Active buzzer ready on GPIO" + String(BUZZER_PIN));
   } else {
-    updateStatusSection("Keypad: OK", TFT_GREEN);
+    updateStatusSection("Buzzer: Disabled", TFT_ORANGE);
+    Serial.println("[BUZZER] Skipping buzzer initialization (pin disabled)");
   }
+  delay(300);
+
+  // 4. Initialize Keypad
+  Serial.println("[4/6] Initializing Keypad...");
+  initializeKeypad();
+  updateStatusSection("Keypad: OK", TFT_GREEN);
   delay(500);
 
-  // 4. Initialize Network
-  Serial.println("[4/6] Initializing Network...");
-  updateStatusSection("Connecting WiFi...", TFT_YELLOW);
-  
-  WiFi.mode(WIFI_STA);
-  deviceId = getDeviceMacAddress();
-  Serial.print("[NETWORK] Device ID (MAC): ");
-  Serial.println(deviceId);
-  
-  String deviceDisplay = deviceId.length() >= 4 ? deviceId.substring(deviceId.length() - 4) : deviceId;
-  
-  if (!networkModule.initialize(wifiConfig.ssid, wifiConfig.password)) {
-    handleSystemError("NETWORK", "WiFi connection failed");
-    updateConnectionStatus("Failed", "No sync", deviceDisplay);
-    offlineMode = true;
-    allSuccess = false;
-    systemStatus.wifiConnected = false;
-    systemStatus.offlineMode = true;
-    Serial.println("[NETWORK] Continuing in OFFLINE mode");
-  } else {
-    updateStatusSection("WiFi: OK", TFT_GREEN);
-    updateConnectionStatus("Connected", "Syncing...", deviceDisplay);
-    Serial.print("[NETWORK] IP: ");
-    Serial.println(networkModule.getIpAddress());
-    systemStatus.wifiConnected = true;
-  }
-  delay(500);
+  // 5. Prepare standby state and identify device
+  Serial.println("[5/6] Preparing standby state...");
+  deviceId = resolveDeviceId();
+  systemStatus.wifiConnected = false;
+  systemStatus.apiConnected = false;
+  systemStatus.offlineMode = true;
 
-  // 5. Initialize RFID
-  Serial.println("[5/6] Initializing RFID...");
+  String deviceDisplay = deviceId;
+  updateConnectionStatus("Inactive", "Manual", deviceDisplay);
+  updateStatusSection("AWAIT ACTIVATION", TFT_CYAN);
+  delay(300);
+
+  // 6. Initialize RFID (critical component)
+  Serial.println("[6/7] Initializing RFID...");
   updateStatusSection("Init RFID...", TFT_YELLOW);
-  
+
   if (!rfidModule.initialize()) {
     handleSystemError("RFID", "PN532 not found");
     allSuccess = false;
@@ -203,87 +277,158 @@ bool initializeSystem() {
   }
   delay(500);
 
-  // 6. Initialize API Client
-  Serial.println("[6/7] Initializing API...");
-  updateStatusSection("Connecting API...", TFT_YELLOW);
-  
-  if (!apiModule.initialize(serverConfig.baseUrl, serverConfig.apiKey, deviceId)) {
-    handleSystemError("API", "Initialization failed");
-    allSuccess = false;
-    systemStatus.apiConnected = false;
+  systemStatus.uptime = millis();
+  systemStatus.freeHeap = ESP.getFreeHeap();
+
+  LOG_INFO("Base system initialization completed");
+  LOG_INFO("Free heap: " + String(systemStatus.freeHeap) + " bytes");
+
+  // Initialize SPIFFS for offline tag data storage
+  Serial.println("[7/7] Initializing SPIFFS...");
+  if (!SPIFFS.begin(true)) {
+    Serial.println("[SPIFFS] Failed to mount filesystem");
+    updateStatusSection("SPIFFS FAIL", TFT_ORANGE);
   } else {
-    updateStatusSection("API: OK", TFT_GREEN);
-    systemStatus.apiConnected = true;
+    Serial.println("[SPIFFS] Filesystem mounted successfully");
+    updateStatusSection("SPIFFS OK", TFT_GREEN);
   }
   delay(500);
 
-  // 7. Initialize WebSocket (if WiFi connected and enabled)
-  Serial.println("[7/7] Initializing WebSocket...");
-  if (useWebSocket && systemStatus.wifiConnected) {
-    updateStatusSection("Connecting WS...", TFT_YELLOW);
-    
-    // Set up WebSocket callbacks
-    wsModule.setOnScanResponse(handleScanResponse);
-    wsModule.setOnConfigUpdate(handleConfigUpdate);
-    wsModule.setOnConnectionStatus(handleWSConnectionStatus);
-    
-    // Initialize WebSocket connection
-    wsModule.begin(deviceId);
-    updateStatusSection("WS: Connecting", TFT_YELLOW);
-    
-    Serial.println("[WS] WebSocket module initialized");
-    Serial.println("[WS] Real-time communication enabled");
-  } else if (!useWebSocket) {
-    Serial.println("[WS] WebSocket disabled - using HTTP only");
-    updateStatusSection("WS: Disabled", TFT_ORANGE);
-  } else {
-    Serial.println("[WS] WebSocket unavailable - no WiFi");
-    updateStatusSection("WS: Offline", TFT_ORANGE);
+  return rfidModule.isInitialized() && allSuccess;
+}
+
+bool activateOnlineServices(bool showFeedback) {
+  if (activationInProgress) {
+    if (showFeedback) {
+      updateFooter("Activation already running");
+    }
+    return false;
   }
-  delay(500);
-  
-  // Test API connection
-  if (!apiModule.isInitialized()) {
-    Serial.println("[API] WARNING: API module not initialized");
-    offlineMode = true;
-    allSuccess = false;
-    systemStatus.apiConnected = false;
+
+  if (servicesActivated && !offlineMode && networkModule.isConnected() && apiModule.isInitialized()) {
+    if (showFeedback) {
+      updateFooter("Services already active");
+    }
+    return true;
+  }
+
+  activationInProgress = true;
+
+  Serial.println("\n[ACTIVATION] Manual activation started");
+  updateStatusSection("ACTIVATING...", TFT_YELLOW);
+  if (showFeedback) {
+    updateFooter("Connecting services...");
+  }
+
+  if (deviceId.length() == 0) {
+    deviceId = resolveDeviceId();
+  }
+  String deviceDisplay = deviceId;
+
+  bool wifiOk = false;
+  bool apiInit = false;
+  bool pollReady = false;
+
+  WiFi.mode(WIFI_STA);
+
+  Serial.println("[ACTIVATION] Connecting WiFi...");
+  if (!networkModule.initialize(wifiConfig.ssid, wifiConfig.password)) {
+    handleSystemError("NETWORK", "WiFi connection failed");
+    updateConnectionStatus("Failed", "Manual", deviceDisplay);
+    systemStatus.wifiConnected = false;
+    wifiOk = false;
   } else {
+    wifiOk = true;
+    systemStatus.wifiConnected = true;
+    updateStatusSection("WiFi: OK", TFT_GREEN);
+    updateConnectionStatus("Connected", "Syncing...", deviceDisplay);
+    Serial.print("[NETWORK] IP: ");
+    Serial.println(networkModule.getIpAddress());
+  }
+
+  Serial.println("[ACTIVATION] Initializing API module...");
+  if (wifiOk && apiModule.initialize(serverConfig.baseUrl, serverConfig.apiKey, deviceId)) {
+    apiInit = true;
+    systemStatus.apiConnected = true;
+    updateStatusSection("API: OK", TFT_GREEN);
+  } else {
+    apiInit = false;
+    systemStatus.apiConnected = false;
+    if (wifiOk) {
+      updateStatusSection("API INVALID", TFT_ORANGE);
+      Serial.println("[API] Initialization failed. Check base URL/API key");
+    }
+  }
+
+  pollingModule.begin(&networkModule, &apiModule, COMMAND_POLL_INTERVAL);
+
+  if (wifiOk && apiModule.isInitialized() && pollingModule.isReady()) {
+    pollReady = true;
+    updateStatusSection("POLL READY", TFT_GREEN);
+    Serial.println("[POLL] Command polling enabled");
+    pollingModule.pollImmediate();
+  } else if (!wifiOk) {
+    updateStatusSection("POLL OFFLINE", TFT_ORANGE);
+    Serial.println("[POLL] Polling unavailable - WiFi offline");
+  } else {
+    updateStatusSection("POLL DISABLED", TFT_ORANGE);
+    Serial.println("[POLL] Polling unavailable - API offline");
+  }
+
+  if (wifiOk && apiModule.isInitialized()) {
     ApiResponse connCheck = apiModule.checkConnection();
-    if (offlineMode || connCheck.result != API_SUCCESS) {
-      Serial.println("[API] WARNING: Backend not reachable");
-      updateStatusSection("API: OFFLINE", TFT_ORANGE);
+    if (connCheck.result == API_SUCCESS) {
+      offlineMode = false;
+      systemStatus.apiConnected = true;
+      updateStatusSection("API ONLINE", TFT_GREEN);
+    } else {
       offlineMode = true;
       systemStatus.apiConnected = false;
-      systemStatus.offlineMode = true;
+      updateStatusSection("API OFFLINE", TFT_ORANGE);
+      Serial.println("[API] Backend not reachable: " + connCheck.error);
+    }
+  } else {
+    offlineMode = true;
+  }
+
+  if (wifiOk) {
+    if (!offlineMode) {
+      updateStatusSection("Syncing time...", TFT_YELLOW);
+      if (!initializeTime()) {
+        Serial.println("[TIME] Sync failed - continuing");
+        updateConnectionStatus("Connected", "No sync", deviceDisplay);
+      } else {
+        updateConnectionStatus("Connected", "Synced", deviceDisplay);
+      }
     } else {
-      updateStatusSection("API: OK", TFT_GREEN);
-      systemStatus.apiConnected = true;
+      updateConnectionStatus("Connected", "Manual", deviceDisplay);
     }
   }
-  
-  // Initialize time synchronization (non-critical)
-  if (!offlineMode) {
-    updateStatusSection("Syncing time...", TFT_YELLOW);
-    if (!initializeTime()) {
-      Serial.println("[TIME] Sync failed - continuing");
-      updateConnectionStatus("Connected", "No sync", deviceDisplay);
+
+  servicesActivated = true;
+  systemStatus.offlineMode = offlineMode;
+  activationInProgress = false;
+
+  bool success = wifiOk && !offlineMode;
+  if (showFeedback) {
+    if (success) {
+      updateFooter("Services activated successfully");
+    } else if (wifiOk && offlineMode) {
+      updateFooter("API offline - operating in offline mode");
     } else {
-      updateConnectionStatus("Connected", "Synced", deviceDisplay);
+      updateFooter("Activation failed - check WiFi/API");
     }
   }
-  
-  delay(1000);
-  
-  // Update system status
-  systemStatus.uptime = millis();
-  systemStatus.freeHeap = ESP.getFreeHeap();
-  
-  LOG_INFO("System initialization completed");
-  LOG_INFO("Free heap: " + String(systemStatus.freeHeap) + " bytes");
-  
-  // Return true even if some non-critical modules failed
-  return rfidModule.isInitialized();  // RFID is critical
+
+  Serial.println("[ACTIVATION] Manual activation complete");
+  Serial.print("[ACTIVATION] WiFi: ");
+  Serial.println(wifiOk ? "OK" : "FAILED");
+  Serial.print("[ACTIVATION] API: ");
+  Serial.println(apiInit ? "OK" : "FAILED");
+  Serial.print("[ACTIVATION] Polling: ");
+  Serial.println(pollReady ? "READY" : "DISABLED");
+
+  return success;
 }
 
 void handleSystemError(const char* component, const char* error) {
@@ -295,6 +440,7 @@ void handleSystemError(const char* component, const char* error) {
   updateStatusSection(String(component) + " ERR", TFT_RED);
   updateFooter(String(error));
   sendToLEDMatrix("ERROR", String(component), "");
+  buzzerErrorTone();
   
   delay(2000);
 }
@@ -302,50 +448,55 @@ void handleSystemError(const char* component, const char* error) {
 void loop(void) {
   if (!systemReady) {
     // Safe mode - minimal functionality
-    handleKeypadInputNew();
+    handleKeypadInput();
     checkSerialCommands();
     delay(100);
     return;
   }
 
-  // WebSocket loop (maintains connection, handles messages)
-  if (useWebSocket && wsModule.isConnected()) {
-    wsModule.loop();
+  // Check network connection and attempt reconnection when services are active
+  if (servicesActivated && (millis() - lastNetworkCheck >= NETWORK_CHECK_INTERVAL)) {
+    lastNetworkCheck = millis();
+    checkNetworkConnection();
   }
-
-  // Check network connection and attempt reconnection
-  checkNetworkConnection();
   
   // Handle RFID scanning
   handleRFIDScanning();
 
-  // Handle keypad input (use both old and new methods for compatibility)
-  handleKeypadInput();  // Legacy function
-  handleKeypadInputNew();  // New class-based function
+  // Handle keypad input
+  handleKeypadInput();
   
   // Check serial commands
   checkSerialCommands();
 
   unsigned long currentMillis = millis();
+
+  if (heartbeatFlashUntil > 0 && currentMillis >= heartbeatFlashUntil) {
+    showHeartbeat(false);
+    heartbeatFlashUntil = 0;
+  }
   
   // Check registration mode periodically (only if online)
-  // Note: Registration mode is now controlled via WebSocket config updates
+  // Note: Registration mode is now controlled via HTTP command polling
   // TODO: Implement checkRegistrationModeFromServer() if polling is needed
   // if (!offlineMode && currentMillis - lastRegistrationCheck > 5000) {
   //   lastRegistrationCheck = currentMillis;
   //   checkRegistrationModeFromServer();
   // }
   
-  // Send heartbeat
-  sendPeriodicHeartbeat();
+  // Send heartbeat and poll commands only after manual activation
+  if (servicesActivated) {
+    sendPeriodicHeartbeat();
+    pollingModule.loop();
+  }
   
   // Clear registration keypad buffer if timeout reached (prevents accidental commands)
   if (registrationKeypadBuffer.length() > 0 && (currentMillis - lastRegistrationKeypadInput > KEYPAD_BUFFER_TIMEOUT)) {
     registrationKeypadBuffer = "";
   }
   
-  // Handle keypad timeout
-  if (checkKeypadTimeout(currentMillis)) {
+  // Handle keypad timeout (skip if override is active)
+  if (!isOverrideActive() && checkKeypadTimeout(currentMillis)) {
     Serial.println("[KEYPAD] Input timeout");
     clearKeypadInput();
     indicateReady();
@@ -366,34 +517,266 @@ void loop(void) {
     updateFooter("Registration mode timed out");
   }
 
-  delay(50);
+  delay(5);
+}
+
+void resetRfidDetailState() {
+  lastRfidDetails.detailsAvailable = false;
+  lastRfidDetails.lookupInProgress = false;
+  lastRfidDetails.lookupFailed = false;
+  lastRfidDetails.tagActive = false;
+  lastRfidDetails.userAssigned = false;
+  lastRfidDetails.userActive = false;
+  lastRfidDetails.lastHttpCode = 0;
+  lastRfidDetails.tagId = "";
+  lastRfidDetails.unitNumber = "";
+  lastRfidDetails.userName = "";
+  lastRfidDetails.error = "";
+}
+
+// SPIFFS functions for offline tag data storage
+void saveTagData(const String& tagId, const String& unitNumber, const String& userName) {
+  String filename = "/tag_" + tagId + ".txt";
+  fs::File file = SPIFFS.open(filename, "w");
+  if (file) {
+    file.println(unitNumber);
+    file.println(userName);
+    file.close();
+    Serial.println("[SPIFFS] Saved tag data: " + tagId + " -> " + unitNumber + " (" + userName + ")");
+  } else {
+    Serial.println("[SPIFFS] Failed to save tag data: " + tagId);
+  }
+}
+
+bool loadTagData(const String& tagId, String& unitNumber, String& userName) {
+  String filename = "/tag_" + tagId + ".txt";
+  if (SPIFFS.exists(filename)) {
+    fs::File file = SPIFFS.open(filename, "r");
+    if (file) {
+      unitNumber = file.readStringUntil('\n');
+      unitNumber.trim();
+      userName = file.readStringUntil('\n');
+      userName.trim();
+      file.close();
+      Serial.println("[SPIFFS] Loaded tag data: " + tagId + " -> " + unitNumber + " (" + userName + ")");
+      return true;
+    }
+  }
+  return false;
+}
+
+void updateRfidDetailState(const RfidDetailResult& result) {
+  lastRfidDetails.lookupInProgress = false;
+  lastRfidDetails.lastHttpCode = result.httpCode;
+  lastRfidDetails.error = result.error;
+  lastRfidDetails.tagId = result.tagId;
+  lastRfidDetails.detailsAvailable = result.success && result.detailsAvailable;
+  lastRfidDetails.lookupFailed = !result.success;
+  lastRfidDetails.tagActive = result.tagActive;
+  lastRfidDetails.userAssigned = result.userAssigned;
+  lastRfidDetails.userActive = result.userActive;
+  lastRfidDetails.unitNumber = result.unitNumber;
+  lastRfidDetails.userName = result.userName;
+}
+
+RfidDisplayStatus determineRfidDisplayStatus(const RfidDetailState& state) {
+  RfidDisplayStatus status;
+  status.label = "Tag detected";
+  status.color = TFT_CYAN;
+  status.secondary = "";
+
+  if (state.lookupInProgress) {
+    status.label = "Fetching details...";
+    status.color = TFT_YELLOW;
+    return status;
+  }
+
+  if (state.lookupFailed) {
+    status.label = "Details unavailable";
+    status.color = (state.lastHttpCode >= 500 || state.lastHttpCode == 0) ? TFT_RED : TFT_ORANGE;
+    status.secondary = state.error.length() > 0 ? state.error : String("Try again");
+    return status;
+  }
+
+  if (!state.detailsAvailable) {
+    status.label = "Not registered";
+    status.color = TFT_ORANGE;
+    status.secondary = state.error.length() > 0 ? state.error : String("Ready for registration");
+    return status;
+  }
+
+  // Details available
+  if (!state.tagActive) {
+    status.label = "Tag inactive";
+    status.color = TFT_RED;
+    status.secondary = state.error.length() > 0 ? state.error : String("Contact administrator");
+    return status;
+  }
+
+  if (!state.userAssigned) {
+    status.label = "Unassigned tag";
+    status.color = TFT_ORANGE;
+    status.secondary = String("Assign driver to tag");
+    return status;
+  }
+
+  if (!state.userActive) {
+    status.label = "Driver inactive";
+    status.color = TFT_ORANGE;
+    status.secondary = state.userName.length() > 0 ? state.userName : String("Contact administrator");
+    return status;
+  }
+
+  status.label = "Driver active";
+  status.color = TFT_GREEN;
+  status.secondary = String("Access allowed");
+  return status;
+}
+
+void renderRfidDetailsForStatus(const RfidDisplayStatus& status, const String& fallbackTagId) {
+  if (lastRfidDetails.tagId.length() == 0 && fallbackTagId.length() > 0) {
+    lastRfidDetails.tagId = fallbackTagId;
+  }
+
+  String displayTag = lastRfidDetails.tagId.length() > 0 ? lastRfidDetails.tagId : fallbackTagId;
+
+  // In operation mode, don't overwrite the queue matrix display
+  if (!operationMode) {
+    updateRfidScanDetails(
+      displayTag,
+      lastRfidDetails.unitNumber,
+      lastRfidDetails.userName,
+      lastRfidDetails.tagActive,
+      lastRfidDetails.userAssigned,
+      lastRfidDetails.userActive,
+      status.label,
+      status.color,
+      status.secondary
+    );
+  }
+}
+
+void renderRfidDetailsForStatus(const String& label, uint16_t color, const String& secondary, const String& fallbackTagId) {
+  RfidDisplayStatus status;
+  status.label = label;
+  status.color = color;
+  status.secondary = secondary;
+  renderRfidDetailsForStatus(status, fallbackTagId);
+}
+
+void updateStatusSectionFromDetail(const RfidDisplayStatus& status) {
+  String banner = status.label.length() > 0 ? status.label : String("TAG DETECTED");
+  banner.toUpperCase();
+  updateStatusSection(banner, status.color);
+}
+
+RfidDisplayStatus lookupRfidDetails(const String& tagId) {
+  if (!offlineMode && apiModule.isInitialized()) {
+    RfidDetailResult detailResult = apiModule.getRfidDetails(tagId);
+    if (detailResult.tagId.length() == 0) {
+      detailResult.tagId = tagId;
+    }
+    updateRfidDetailState(detailResult);
+
+    // If successful, save to SPIFFS for offline use
+    if (detailResult.success && detailResult.detailsAvailable && detailResult.tagActive) {
+      saveTagData(tagId, detailResult.unitNumber, detailResult.userName);
+    }
+  } else {
+    // Offline mode - try to load from SPIFFS cache
+    String unitNumber, userName;
+    if (loadTagData(tagId, unitNumber, userName)) {
+      // Create successful result from cached data
+      RfidDetailResult offlineResult;
+      offlineResult.tagId = tagId;
+      offlineResult.unitNumber = unitNumber;
+      offlineResult.userName = userName;
+      offlineResult.success = true;
+      offlineResult.detailsAvailable = true;
+      offlineResult.tagActive = true;
+      offlineResult.userAssigned = true;
+      offlineResult.userActive = true;
+      offlineResult.error = "Loaded from cache";
+      offlineResult.httpCode = 0;
+      updateRfidDetailState(offlineResult);
+    } else {
+      // No cached data available
+      RfidDetailResult offlineResult;
+      offlineResult.tagId = tagId;
+      offlineResult.error = offlineMode ? String("Offline mode - no cached data") : String("API unavailable");
+      offlineResult.success = false;
+      offlineResult.detailsAvailable = false;
+      offlineResult.httpCode = 0;
+      updateRfidDetailState(offlineResult);
+    }
+  }
+
+  if (lastRfidDetails.tagId.length() == 0) {
+    lastRfidDetails.tagId = tagId;
+  }
+
+  return determineRfidDisplayStatus(lastRfidDetails);
+}
+
+bool triggerNetworkReconnect(const char* reasonLabel, bool allowOfflineFallback) {
+  if (!servicesActivated) {
+    Serial.println("[NETWORK] Reconnect skipped - services inactive");
+    return false;
+  }
+
+  if (reasonLabel && strlen(reasonLabel) > 0) {
+    Serial.print("[NETWORK] ");
+    Serial.print(reasonLabel);
+    Serial.println(" - attempting reconnect...");
+  } else {
+    Serial.println("[NETWORK] Attempting reconnect...");
+  }
+
+  updateStatusSection("RECONNECTING", TFT_ORANGE);
+
+  bool reconnected = networkModule.reconnect();
+  if (reconnected) {
+    Serial.println("[NETWORK] Reconnected successfully");
+    updateStatusSection("RECONNECTED", TFT_GREEN);
+    offlineMode = false;
+    apiModule.resetFailureCount();
+    
+    String deviceDisplay = deviceId.length() >= 4 ? deviceId.substring(deviceId.length() - 4) : deviceId;
+    updateConnectionStatus("Connected", "Synced", deviceDisplay);
+    return true;
+  }
+
+  Serial.println("[NETWORK] Reconnection failed");
+
+  if (allowOfflineFallback) {
+    offlineMode = true;
+    updateStatusSection("OFFLINE MODE", TFT_ORANGE);
+  } else {
+    updateStatusSection("RECONNECT FAIL", TFT_RED);
+  }
+
+  return false;
 }
 
 void checkNetworkConnection() {
+  if (!servicesActivated) {
+    return;
+  }
+
   networkModule.updateConnectionStatus();
   
   if (!networkModule.isConnected() && !offlineMode) {
-    Serial.println("[NETWORK] Connection lost - attempting reconnect...");
-    updateStatusSection("RECONNECTING", TFT_ORANGE);
-    
-    if (networkModule.reconnect()) {
-      Serial.println("[NETWORK] Reconnected successfully");
-      updateStatusSection("RECONNECTED", TFT_GREEN);
-      offlineMode = false;
-      apiModule.resetFailureCount();
-      
-      String deviceDisplay = deviceId.length() >= 4 ? deviceId.substring(deviceId.length() - 4) : deviceId;
-      updateConnectionStatus("Connected", "Synced", deviceDisplay);
-    } else {
-      Serial.println("[NETWORK] Reconnection failed - entering offline mode");
-      offlineMode = true;
-      updateStatusSection("OFFLINE MODE", TFT_ORANGE);
-    }
+    triggerNetworkReconnect("Connection lost", true);
   }
 }
 
 void handleRFIDScanning() {
   if (!rfidModule.isInitialized()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (scanCooldownUntil > 0 && now < scanCooldownUntil) {
     return;
   }
   
@@ -405,7 +788,14 @@ void handleRFIDScanning() {
       return;
     }
     
+    resetRfidDetailState();
+    lastRfidDetails.lookupInProgress = true;
+    lastRfidDetails.tagId = tagId;
+
     systemStatus.scanCount++;
+    
+    // Audio feedback for scan
+    buzzerShortBeep();
     
     LOG_INFO("RFID Scanned: " + tagId);
     Serial.print("[RFID] Total scans: ");
@@ -413,9 +803,32 @@ void handleRFIDScanning() {
     
     // Update display
     updateStatusSection("TAG DETECTED", TFT_CYAN);
-    
+    updateRfidScanDetails(tagId, "", "", false, false, false, "Fetching details...", TFT_YELLOW);
+
     // Send to LED matrix
     sendToLEDMatrix("SCAN", tagId.substring(0, 8), "");
+
+    RfidDisplayStatus detailStatus = lookupRfidDetails(tagId);
+    renderRfidDetailsForStatus(detailStatus, tagId);
+    updateStatusSectionFromDetail(detailStatus);
+
+    // Sync tag data to LED Matrix SD card if we have valid details
+    if (lastRfidDetails.detailsAvailable && lastRfidDetails.tagActive) {
+      String unitNumber = lastRfidDetails.unitNumber.length() > 0 ? lastRfidDetails.unitNumber : tagId;
+      String userName = lastRfidDetails.userName.length() > 0 ? lastRfidDetails.userName : "";
+      
+      // Send tag data to LED Matrix for SD card storage
+      // Format: SYNC_DB|tagId|unitNumber,userName
+      String syncData = unitNumber + "," + userName;
+      sendToLEDMatrix("SYNC_DB", tagId, syncData);
+      
+      Serial.println("[SD SYNC] Sent tag data to LED Matrix: " + tagId + " -> " + unitNumber + " (" + userName + ")");
+    }
+
+    String queueEventType = "";
+    if (operationMode) {
+      queueEventType = handleQueueScan(tagId);
+    }
     
     if (registrationMode) {
       // Handle registration mode scanning
@@ -427,87 +840,81 @@ void handleRFIDScanning() {
       Serial.println();
       
       updateStatusSection("REGISTERING TAG", TFT_ORANGE);
-      updateScanSection(tagId, "REGISTERING", "Please wait...", TFT_YELLOW);
+      renderRfidDetailsForStatus("Registering tag...", TFT_YELLOW, "Please wait...", tagId);
       sendToLEDMatrix("REG", tagId.substring(0, 8), "WAIT");
       
-      // Send registration request to backend
-      if (useWebSocket && wsModule.isConnected()) {
-        // Send via WebSocket with registration flag
-        Serial.println("[WS] Sending registration via WebSocket");
-        // Note: WebSocket sendScan should be enhanced to support registration mode
-        // For now, using HTTP
-        ApiResponse response = apiModule.sendScan(tagId, deviceConfig.location);
+      // Send registration request to backend via HTTP
+      if (!offlineMode && apiModule.isInitialized()) {
+        Serial.println("[HTTP] Sending registration request");
+  ApiResponse response = apiModule.sendScan(tagId, deviceConfig.location);
         
         if (response.result == API_SUCCESS) {
           Serial.println("[✓] Tag registered successfully!");
-          updateScanSection(tagId, "REGISTERED", "Success!", TFT_GREEN);
+          updateStatusSection("REGISTERED", TFT_GREEN);
+          renderRfidDetailsForStatus("Registration complete", TFT_GREEN, "Scan next tag", tagId);
           sendToLEDMatrix("REG", "SUCCESS", "");
           indicateSuccess();
+          apiModule.resetFailureCount();
           
-          // Auto-exit registration mode after successful registration
+          // Registration mode stays enabled for multiple registrations
           delay(2000);
-          registrationMode = false;
-          updateStatusSection("NORMAL MODE", TFT_GREEN);
-          updateFooter("Ready to scan");
+
+          if (!offlineMode && apiModule.isInitialized()) {
+            detailStatus = lookupRfidDetails(tagId);
+            renderRfidDetailsForStatus(detailStatus, tagId);
+            updateStatusSectionFromDetail(detailStatus);
+          }
         } else {
           Serial.println("[✗] Registration failed: " + response.error);
-          updateScanSection(tagId, "REG FAILED", response.error, TFT_RED);
-          sendToLEDMatrix("REG", "FAILED", "");
-          indicateError();
-        }
-      } else if (!offlineMode && apiModule.isInitialized()) {
-        Serial.println("[HTTP] Sending registration via HTTP");
-        ApiResponse response = apiModule.sendScan(tagId, deviceConfig.location);
-        
-        if (response.result == API_SUCCESS) {
-          Serial.println("[✓] Tag registered successfully!");
-          updateScanSection(tagId, "REGISTERED", "Success!", TFT_GREEN);
-          sendToLEDMatrix("REG", "SUCCESS", "");
-          indicateSuccess();
-          
-          // Auto-exit registration mode after successful registration
-          delay(2000);
-          registrationMode = false;
-          updateStatusSection("NORMAL MODE", TFT_GREEN);
-          updateFooter("Ready to scan");
-        } else {
-          Serial.println("[✗] Registration failed: " + response.error);
-          updateScanSection(tagId, "REG FAILED", response.error, TFT_RED);
+          updateStatusSection("REG FAILED", TFT_RED);
+          renderRfidDetailsForStatus("Registration failed", TFT_RED, response.error, tagId);
           sendToLEDMatrix("REG", "FAILED", "");
           indicateError();
         }
       } else {
         Serial.println("[✗] Cannot register - offline mode");
-        updateScanSection(tagId, "OFFLINE", "Cannot register", TFT_RED);
+        updateStatusSection("OFFLINE", TFT_RED);
+        renderRfidDetailsForStatus("Cannot register", TFT_RED, "Offline mode", tagId);
         indicateError();
       }
     } else {
-      // Normal scanning mode
-      // Try WebSocket first (if enabled and connected)
-      if (useWebSocket && wsModule.isConnected()) {
-        Serial.println("[WS] Sending scan via WebSocket");
-        wsModule.sendScan(tagId, deviceConfig.location);
-        
-        // Show processing message
-        updateStatusSection("PROCESSING...", TFT_YELLOW);
-        updateScanSection(tagId, "PROCESSING", "Sending to server", TFT_YELLOW);
-        
-        // Response will be handled by handleScanResponse callback
-      } 
-      // Fallback to HTTP if WebSocket not available
-      else if (!offlineMode && apiModule.isInitialized()) {
-        Serial.println("[HTTP] Sending scan via HTTP (WebSocket unavailable)");
+      // Normal scanning mode (HTTP only)
+      if (!offlineMode && apiModule.isInitialized()) {
+        Serial.println("[HTTP] Sending scan via REST endpoint");
         // Send to backend via HTTP
-        ApiResponse response = apiModule.sendScan(tagId, deviceConfig.location);
+        ApiResponse response = apiModule.sendScan(
+          tagId,
+          deviceConfig.location,
+          queueEventType
+        );
         if (response.result == API_SUCCESS) {
           Serial.println("[API] Scan sent successfully");
           // Parse and handle response - for now just show success
           updateStatusSection("SCAN OK", TFT_GREEN);
-          updateScanSection(tagId, "SENT", "Via HTTP", TFT_GREEN);
+          String successSecondary = detailStatus.secondary.length() > 0 ? detailStatus.secondary : String("Scan sent via HTTP");
+          
+          // Override display if in operation mode
+          if (operationMode) {
+             String queueDisplayEvent = queueEventType;
+             if (queueDisplayEvent.length() == 0) {
+               auto stateIt = queueStates.find(tagId);
+               int fallbackState = (stateIt != queueStates.end()) ? stateIt->second : 0;
+               queueDisplayEvent = (fallbackState == 2) ? "ongoing" : "ongoing";
+             }
+
+             uint16_t color = (queueDisplayEvent == "ongoing") ? TFT_GREEN : TFT_ORANGE;
+
+             String stateStr = queueDisplayEvent;
+             stateStr.toUpperCase();
+             renderRfidDetailsForStatus("QUEUE: " + stateStr, color, successSecondary, tagId);
+          } else {
+             renderRfidDetailsForStatus(detailStatus.label, detailStatus.color, successSecondary, tagId);
+          }
+          apiModule.resetFailureCount();
         } else {
           Serial.println("[API] Failed to send scan");
           updateStatusSection("SCAN FAILED", TFT_RED);
-          updateScanSection(tagId, "OFFLINE", "Scan not sent", TFT_ORANGE);
+          renderRfidDetailsForStatus("Scan not sent", TFT_ORANGE, response.error, tagId);
           
           systemStatus.errorCount++;
           
@@ -522,109 +929,28 @@ void handleRFIDScanning() {
       } else {
         // Offline mode - just display
         Serial.println("[OFFLINE] Scan recorded locally");
-        updateScanSection(tagId, "OFFLINE", "Backend unavailable", TFT_ORANGE);
+        updateStatusSection("OFFLINE SCAN", TFT_ORANGE);
+        renderRfidDetailsForStatus(detailStatus.label, detailStatus.color, "Backend unavailable", tagId);
         updateFooter("Offline scan: " + tagId.substring(0, 8));
+        
+        // Send OFFLINE_SCAN command to Matrix
+        // The Matrix will check its SD card database and handle the queue logic if found
+        sendToLEDMatrix("OFFLINE_SCAN", tagId, "");
       }
     }
     
-    delay(200);
-  }
-}
-
-void handleKeypadInputNew() {
-  char key = keypadModule.getKey();
-  
-  if (key) {
-    Serial.print("[KEYPAD] Key pressed: ");
-    Serial.println(key);
-    
-    // Update last input time
-    lastRegistrationKeypadInput = millis();
-    
-    // Add key to buffer
-    registrationKeypadBuffer += key;
-    
-    // Check for registration mode toggle command (###)
-    if (registrationKeypadBuffer.endsWith("###")) {
-      registrationMode = !registrationMode;
-      registrationKeypadBuffer = "";  // Clear buffer
-      
-      Serial.println();
-      Serial.println("═══════════════════════════════════════");
-      Serial.print("  REGISTRATION MODE: ");
-      Serial.println(registrationMode ? "ENABLED ✓" : "DISABLED ✗");
-      Serial.println("═══════════════════════════════════════");
-      Serial.println();
-      
-      if (registrationMode) {
-        registrationModeStartTime = millis();
-        indicateRegistrationMode();
-        updateStatusSection("REGISTRATION MODE", TFT_ORANGE);
-        updateFooter("Scan tag to register");
-        sendToLEDMatrix("REG", "MODE", "ACTIVE");
-      } else {
-        updateStatusSection("NORMAL MODE", TFT_GREEN);
-        updateFooter("Ready to scan");
-        sendToLEDMatrix("READY", "", "");
-      }
-      
-      return;  // Exit early after handling command
-    }
-    
-    // Limit buffer size to prevent memory issues
-    if (registrationKeypadBuffer.length() > 10) {
-      registrationKeypadBuffer = registrationKeypadBuffer.substring(registrationKeypadBuffer.length() - 10);
-    }
-    
-    // Special system commands (single key)
-    if (key == '#' && registrationKeypadBuffer.length() == 1) {
-      // Display system status
-      Serial.println("\n[STATUS] System Information:");
-      Serial.print("  WiFi: ");
-      Serial.println(networkModule.isConnected() ? "Connected" : "Disconnected");
-      Serial.print("  RFID: ");
-      Serial.println(rfidModule.isInitialized() ? "OK" : "ERROR");
-      Serial.print("  API Failures: ");
-      Serial.println(apiModule.getConsecutiveFailures());
-      Serial.print("  Mode: ");
-      Serial.println(offlineMode ? "OFFLINE" : "ONLINE");
-      Serial.print("  Uptime: ");
-      Serial.print(millis() / 1000);
-      Serial.println(" seconds");
-      Serial.print("  Free Heap: ");
-      Serial.print(ESP.getFreeHeap());
-      Serial.println(" bytes");
-      Serial.print("  Total Scans: ");
-      Serial.println(systemStatus.scanCount);
-      Serial.print("  Error Count: ");
-      Serial.println(systemStatus.errorCount);
-      Serial.println();
-      
-      updateStatusSection("STATUS CHECK", TFT_CYAN);
-      updateFooter("Check serial monitor");
-    } else if (key == '*') {
-      // Force heartbeat
-      if (!offlineMode && apiModule.isInitialized()) {
-        ApiResponse response = apiModule.sendHeartbeat(true);
-        if (response.result == API_SUCCESS) {
-          Serial.println("[HEARTBEAT] Manual heartbeat sent");
-          updateStatusSection("HEARTBEAT OK", TFT_GREEN);
-        } else {
-          Serial.println("[HEARTBEAT] Failed");
-          updateStatusSection("HEARTBEAT FAIL", TFT_RED);
-        }
-      } else {
-        Serial.println("[HEARTBEAT] Offline mode");
-        updateStatusSection("OFFLINE", TFT_ORANGE);
-      }
-    }
+    scanCooldownUntil = millis() + SCAN_POST_COOLDOWN_MS;
   }
 }
 
 void sendPeriodicHeartbeat() {
+  if (!servicesActivated || isOverrideActive()) {
+    return;
+  }
+
   unsigned long currentMillis = millis();
   
-  if (currentMillis - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+  if (currentMillis - lastHeartbeat >= HEARTBEAT_INTERVAL) {
     lastHeartbeat = currentMillis;
     
     if (!offlineMode && networkModule.isConnected()) {
@@ -632,8 +958,7 @@ void sendPeriodicHeartbeat() {
       if (response.result == API_SUCCESS) {
         Serial.println("[HEARTBEAT] Sent successfully");
         showHeartbeat(true);
-        delay(100);
-        showHeartbeat(false);
+        heartbeatFlashUntil = millis() + HEARTBEAT_FLASH_MS;
       } else {
         Serial.println("[HEARTBEAT] Failed");
         // Note: incrementFailureCount() doesn't exist, using resetFailureCount() instead
@@ -677,114 +1002,300 @@ void checkSerialCommands() {
         updateFooter("Ready to scan");
         sendToLEDMatrix("READY", "", "");
       }
+    } else if (command.equalsIgnoreCase("activate")) {
+      Serial.println("[SERIAL] Manual activation requested");
+      activateOnlineServices(true);
+      refreshMenuPanel();
+    } else if (command.startsWith("override ")) {
+      // Format: override <oldIdentifier> <newIdentifier>
+      int firstSpace = command.indexOf(' ');
+      String args = command.substring(firstSpace + 1);
+      args.trim();
+      int sep = args.indexOf(' ');
+      if (sep > 0) {
+        String oldId = args.substring(0, sep);
+        String newId = args.substring(sep + 1);
+        oldId.trim(); newId.trim();
+        bool ok = overrideQueueUnitByIdentifier(oldId, newId, true);
+        Serial.println(ok ? "[OVERRIDE] Replaced identifier" : "[OVERRIDE] Identifier not found");
+      } else {
+        Serial.println("[OVERRIDE] Usage: override <oldIdentifier> <newIdentifier>");
+      }
+    } else if (command.startsWith("color ")) {
+      // Format: color <identifier> <type>
+      int firstSpace = command.indexOf(' ');
+      String args = command.substring(firstSpace + 1);
+      args.trim();
+      int sep = args.indexOf(' ');
+      if (sep > 0) {
+        String id = args.substring(0, sep);
+        String type = args.substring(sep + 1);
+        id.trim(); type.trim();
+        setQueueUnitOverrideColor(id, type);
+        Serial.println("[OVERRIDE] Color command sent: " + id + " -> " + type);
+      } else {
+        Serial.println("[OVERRIDE] Usage: color <identifier> <type>");
+      }
     }
   }
 }
 
-// ===================================
-// WebSocket Callback Functions
-// ===================================
+namespace {
+  // Forward declare functions defined later in this anonymous namespace
+  void removeQueueEntriesByIdentifier(const String& identifier) {
+    if (identifier.length() == 0) {
+      return;
+    }
 
-/**
- * Callback when scan response received from WebSocket
- */
-void handleScanResponse(JsonDocument& doc) {
-  if (doc["success"]) {
-    bool isRegistered = doc["scan"]["isRegistered"] | false;
-    String tagId = doc["scan"]["tagId"] | "";
-    
-    if (isRegistered && doc.containsKey("user")) {
-      // Registered user
-      String userName = doc["user"]["name"] | "Unknown";
-      String userRole = doc["user"]["role"] | "";
-      
-      Serial.println("✅ Registered: " + userName + " (" + userRole + ")");
-      
-      // Update display
-      updateStatusSection("REGISTERED", TFT_GREEN);
-      updateScanSection(tagId, userName, "Welcome!", TFT_GREEN);
-      updateFooter("Access granted: " + userName);
-      
-      // Send to LED matrix
-      sendToLEDMatrix("WELCOME", userName.substring(0, 8), "");
-      
-      // Reset API failure count
-      apiModule.resetFailureCount();
-      
+    for (auto it = queueIdentifiers.begin(); it != queueIdentifiers.end();) {
+      if (it->second == identifier) {
+        queueStates.erase(it->first);
+        it = queueIdentifiers.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+}
+
+// Queue management functions with external linkage
+bool overrideQueueUnitByIdentifier(const String& oldIdentifier, const String& newIdentifier, bool firstOnly) {
+  if (oldIdentifier.length() == 0 || newIdentifier.length() == 0) return false;
+
+  bool replaced = false;
+  for (int i = 0; i < MAX_QUEUE_SLOTS; i++) {
+    String id = queueSlots[i];
+    if (id.length() > 0 && id != "0" && id == oldIdentifier) {
+      queueSlots[i] = newIdentifier;
+      replaced = true;
+      // If only want first occurrence replaced, break after replacement
+      if (firstOnly) break;
+    }
+  }
+
+  if (replaced) {
+    // Update any reverse mappings in queueIdentifiers (tagId -> identifier) if present
+    for (auto it = queueIdentifiers.begin(); it != queueIdentifiers.end(); ++it) {
+      if (it->second == oldIdentifier) {
+        it->second = newIdentifier;
+      }
+    }
+
+    // Notify LED matrix and backend about the change
+    refreshQueueCascade();
+    // Also send an explicit state update so the matrix can color it appropriately if needed
+    sendToLEDMatrix("QUEUE", newIdentifier, "MODE");
+  }
+
+  return replaced;
+}
+
+void setQueueUnitOverrideColor(const String& identifier, const String& overrideType) {
+  if (identifier.length() == 0 || overrideType.length() == 0) return;
+  String upper = overrideType;
+  upper.toUpperCase();
+  // Known override types: RESERVE -> purple, FIX -> amber, CLEAR/RESET to remove
+  sendToLEDMatrix("QUEUE", identifier, upper);
+}
+
+// Public wrappers with external linkage so other modules (keypad/menu) can call them
+bool overrideQueueUnit(const String& oldIdentifier, const String& newIdentifier, bool firstOnly) {
+  if (oldIdentifier.length() == 0 || newIdentifier.length() == 0) return false;
+
+  bool replaced = false;
+  for (int i = 0; i < MAX_QUEUE_SLOTS; i++) {
+    String id = queueSlots[i];
+    if (id.length() > 0 && id != "0" && id == oldIdentifier) {
+      queueSlots[i] = newIdentifier;
+      replaced = true;
+      if (firstOnly) break;
+    }
+  }
+
+  if (replaced) {
+    for (auto it = queueIdentifiers.begin(); it != queueIdentifiers.end(); ++it) {
+      if (it->second == oldIdentifier) it->second = newIdentifier;
+    }
+    refreshQueueCascade();
+    sendToLEDMatrix("QUEUE", newIdentifier, "MODE");
+  }
+
+  return replaced;
+}
+
+void setQueueUnitOverrideColorPublic(const String& identifier, const String& overrideType) {
+  if (identifier.length() == 0 || overrideType.length() == 0) return;
+  String upper = overrideType;
+  upper.toUpperCase();
+  sendToLEDMatrix("QUEUE", identifier, upper);
+}
+
+// Override a specific slot index (0-based). If expectedOld is non-empty, only replace when it matches.
+bool overrideQueueUnitAtSlot(int slotIndex, const String& expectedOld, const String& newIdentifier) {
+  if (slotIndex < 0 || slotIndex >= MAX_QUEUE_SLOTS) return false;
+  String current = queueSlots[slotIndex];
+  if (current.length() == 0) current = "0";
+  if (expectedOld.length() > 0 && current != expectedOld) {
+    return false;
+  }
+  queueSlots[slotIndex] = newIdentifier;
+
+  // Update reverse mappings
+  for (auto it = queueIdentifiers.begin(); it != queueIdentifiers.end(); ++it) {
+    if (it->second == current) {
+      it->second = newIdentifier;
+    }
+  }
+
+  refreshQueueCascade();
+  sendToLEDMatrix("QUEUE", newIdentifier, "MODE");
+  return true;
+}
+
+void publishQueueSnapshot(const String& cascadeList) {
+  if (
+    !servicesActivated ||
+    offlineMode ||
+    !apiModule.isInitialized() ||
+    !networkModule.isConnected()
+  ) {
+    return;
+  }
+
+  static unsigned long lastPublishAt = 0;
+  const unsigned long now = millis();
+  if (now - lastPublishAt < 250) {
+    return;
+  }
+  lastPublishAt = now;
+
+  ApiResponse response = apiModule.sendQueueSnapshot(
+    cascadeList,
+    queueSlots,
+    MAX_QUEUE_SLOTS,
+    operationMode
+  );
+
+  if (response.result != API_SUCCESS) {
+    Serial.printf(
+      "[QUEUE] Snapshot sync failed (HTTP %d)\n",
+      response.httpCode
+    );
+  }
+}
+
+void refreshQueueCascade() {
+  String cascadeList;
+  // Estimate average slot token + delimiter to avoid repeated reallocations.
+  cascadeList.reserve(MAX_QUEUE_SLOTS * 8);
+
+  for (int i = 0; i < MAX_QUEUE_SLOTS; i++) {
+    if (i > 0) {
+      cascadeList += ",";
+    }
+    const String& slotValue = queueSlots[i];
+    if (slotValue.length() == 0) {
+      cascadeList += "0";
     } else {
-      // Unregistered tag
-      Serial.println("❌ Unregistered tag: " + tagId);
-      
-      updateStatusSection("UNREGISTERED", TFT_ORANGE);
-      updateScanSection(tagId, "NOT REGISTERED", "Please register", TFT_ORANGE);
-      updateFooter("Unregistered: " + tagId.substring(0, 8));
-      
-      // Send to LED matrix
-      sendToLEDMatrix("UNREG", tagId.substring(0, 8), "");
+      cascadeList += slotValue;
     }
-  } else {
-    // Error occurred
-    String error = doc["error"] | "Unknown error";
-    Serial.println("❌ Error: " + error);
-    
-    updateStatusSection("ERROR", TFT_RED);
-    updateScanSection("", "ERROR", error, TFT_RED);
-    updateFooter("Scan error: " + error);
-    
-    sendToLEDMatrix("ERROR", error.substring(0, 8), "");
+  }
+
+  sendToLEDMatrix("CASCADE", cascadeList, "");
+  publishQueueSnapshot(cascadeList);
+
+  // Display queue on TFT in operation mode
+  if (operationMode) {
+    showQueueMatrix(cascadeList);
   }
 }
 
-/**
- * Callback when config update received from WebSocket
- */
-void handleConfigUpdate(JsonDocument& doc) {
-  if (doc.containsKey("config")) {
-    bool regMode = doc["config"]["registrationMode"] | false;
-    
-    // Update local registration mode
-    registrationMode = regMode;
-    deviceConfig.registrationMode = regMode;
-    
-    Serial.println("⚙️ Config updated from server:");
-    Serial.println("  - Registration Mode: " + String(regMode ? "ON" : "OFF"));
-    
-    // Update display
-    if (regMode) {
-      indicateRegistrationMode();
-      updateFooter("Registration mode enabled");
-    } else {
-      indicateReady();
-      updateFooter("Normal scanning mode");
-    }
-    
-    // Send to LED matrix
-    sendToLEDMatrix("CONFIG", regMode ? "REG ON" : "REG OFF", "");
-  }
+// Minimal global display picker used by keypad module to show the
+// currently-selected cascade slot. Placed here so `MAX_QUEUE_SLOTS` and
+// `queueSlots` are already defined and available.
+void displayCascadePicker(int cursorIndex) {
+  if (cursorIndex < 0) cursorIndex = 0;
+  if (cursorIndex >= MAX_QUEUE_SLOTS) cursorIndex = MAX_QUEUE_SLOTS - 1;
+
+  String val = queueSlots[cursorIndex];
+  if (val.length() == 0 || val == "0") val = "-";
+
+  displayKeypadPrompt("Slot " + String(cursorIndex + 1) + ":", val);
+  updateFooter("Use 2/8/4/6 to move, # select, * cancel");
 }
 
-/**
- * Callback when WebSocket connection status changes
- */
-void handleWSConnectionStatus(bool connected) {
-  if (connected) {
-    Serial.println("🔌 WebSocket connected - real-time mode active");
-    updateStatusSection("WS: Connected", TFT_GREEN);
-    updateFooter("Real-time mode active");
-    
-    // Mark system as online
-    offlineMode = false;
-    systemStatus.offlineMode = false;
-    
-  } else {
-    Serial.println("🔌 WebSocket disconnected - falling back to HTTP");
-    updateStatusSection("WS: Disconnected", TFT_ORANGE);
-    updateFooter("Using HTTP fallback");
-    
-    // Don't mark as offline if API is still available
-    if (!apiModule.isInitialized()) {
-      offlineMode = true;
-      systemStatus.offlineMode = true;
+String handleQueueScan(const String& tagId) {
+  // One-tap behavior: always append a new (green) occurrence for this tag
+  // and automatically mark any earlier occurrences of the same identifier as completed (cyan).
+  String identifier = lastRfidDetails.unitNumber;
+  if (identifier.length() == 0) {
+    identifier = tagId;
+  }
+
+  String eventType = "ongoing";
+
+  // Mark previous occurrences (if any) as completed on the matrix
+  for (int i = 0; i < MAX_QUEUE_SLOTS; i++) {
+    String id = queueSlots[i];
+    if (id.length() > 0 && id != "0" && id == identifier) {
+      // Tell LED matrix this earlier slot is completed (will render cyan)
+      sendToLEDMatrix("QUEUE", identifier, "COMPLETED");
     }
   }
+
+  // Append the new occurrence into the next slot (this will be the new green entry)
+  queueSlots[nextQueueSlot] = identifier;
+  nextQueueSlot++;
+  if (nextQueueSlot >= MAX_QUEUE_SLOTS) {
+    nextQueueSlot = 0;
+  }
+
+  // Track presence and identifier mapping
+  queueStates[tagId] = 1;
+  queueIdentifiers[tagId] = identifier;
+
+  // Notify LED matrix of the new ongoing entry (green)
+  sendToLEDMatrix("QUEUE", identifier, "ONGOING");
+
+  refreshQueueCascade();
+  return eventType;
 }
+
+void clearQueueHalf(bool leftHalf) {
+  int start = leftHalf ? 0 : (MAX_QUEUE_SLOTS / 2);
+  int end = leftHalf ? (MAX_QUEUE_SLOTS / 2) : MAX_QUEUE_SLOTS;
+  
+  Serial.print("[QUEUE] Clearing ");
+  Serial.print(leftHalf ? "LEFT" : "RIGHT");
+  Serial.println(" half");
+  
+  for (int i = start; i < end; i++) {
+    String id = queueSlots[i];
+    if (id.length() > 0 && id != "0") {
+      removeQueueEntriesByIdentifier(id);
+      // Don't send CLEAR to preserve colors of remaining entries
+      // sendToLEDMatrix("QUEUE", id, "CLEAR");
+    }
+    queueSlots[i] = "0";
+  }
+  
+  refreshQueueCascade();
+  updateStatusSection(leftHalf ? "LEFT CLEARED" : "RIGHT CLEARED", TFT_CYAN);
+}
+
+void clearEntireQueue() {
+  Serial.println("[QUEUE] Wiping entire queue");
+  for (int i = 0; i < MAX_QUEUE_SLOTS; i++) {
+    String id = queueSlots[i];
+    if (id.length() > 0 && id != "0") {
+      sendToLEDMatrix("QUEUE", id, "CLEAR");
+    }
+    queueSlots[i] = "0";
+  }
+
+  queueStates.clear();
+  queueIdentifiers.clear();
+  refreshQueueCascade();
+  updateStatusSection("QUEUE WIPED", TFT_CYAN);
+}
+

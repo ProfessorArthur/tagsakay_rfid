@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import authService from "../services/auth";
+import useToast from "../composables/useToast";
+import {
+  applyThemeMode,
+  getStoredThemeMode,
+  setStoredThemeMode,
+  type ThemeName,
+} from "../utils/theme";
+const { success: toastSuccess, error: toastError } = useToast();
 import type { RegisterData } from "../services/auth";
 
 const router = useRouter();
@@ -14,8 +22,33 @@ const userData = ref<RegisterData>({
 const confirmPassword = ref("");
 const loading = ref(false);
 const error = ref("");
+const success = ref(""); // Add success message
 const showPassword = ref(false);
 const showConfirmPassword = ref(false);
+const activeTheme = ref<ThemeName>(applyThemeMode(getStoredThemeMode()));
+
+const nextThemeLabel = computed(() =>
+  activeTheme.value === "dark" ? "light" : "dark"
+);
+
+const syncActiveTheme = () => {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const current = document.documentElement.getAttribute("data-theme");
+  activeTheme.value = current === "dark" ? "dark" : "light";
+};
+
+const handleThemeChange = () => {
+  syncActiveTheme();
+};
+
+const toggleTheme = () => {
+  const nextTheme: ThemeName = activeTheme.value === "dark" ? "light" : "dark";
+  setStoredThemeMode(nextTheme);
+  activeTheme.value = applyThemeMode(nextTheme);
+};
 
 // Password strength validation
 const passwordStrength = ref({
@@ -76,7 +109,7 @@ const register = async () => {
   // Validate password strength
   if (!passwordStrength.value.valid) {
     error.value =
-      "Password does not meet minimum requirements (at least 8 characters).";
+      "Password does not meet minimum requirements (at least 15 characters).";
     return;
   }
 
@@ -85,9 +118,44 @@ const register = async () => {
 
   try {
     const response = await authService.register(userData.value);
-    authService.saveUserData(response);
-    router.push("/dashboard");
+
+    // Check if email verification is required
+    // Note: API interceptor extracts 'data' field, so response IS the data
+    if (response?.verified === false) {
+      // Show success message
+      success.value = `✅ Account created! Check your email (${response.email}) for the verification code.`;
+      error.value = "";
+
+      // Show toast and wait 2 seconds, then redirect
+      toastSuccess &&
+        toastSuccess(
+          `Account created — check ${response.email} for verification`
+        );
+      setTimeout(() => {
+        router.push({
+          name: "VerifyEmail",
+          query: { email: response.email },
+        });
+      }, 2000);
+    } else if (response?.token) {
+      // Legacy: if token is present, user is verified
+      success.value = "✅ Registration successful!";
+      authService.saveUserData(response);
+      toastSuccess && toastSuccess("Registration successful — welcome!");
+
+      setTimeout(() => {
+        router.push("/dashboard");
+      }, 1000);
+    } else {
+      // Fallback - show message
+      success.value = "✅ Registration successful! Redirecting...";
+      setTimeout(() => {
+        router.push("/dashboard");
+      }, 1000);
+    }
   } catch (err: any) {
+    success.value = ""; // Clear success on error
+
     // Handle validation errors with detailed feedback
     if (err.response?.status === 400) {
       error.value =
@@ -101,18 +169,66 @@ const register = async () => {
     }
     // Generic error
     else {
-      error.value = err.message || "Registration failed. Please try again.";
+      const msg = err.message || "Registration failed. Please try again.";
+      error.value = msg;
+      toastError && toastError(msg);
     }
   } finally {
     loading.value = false;
   }
 };
+
+onMounted(() => {
+  syncActiveTheme();
+  window.addEventListener("tagsakay-theme-change", handleThemeChange);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("tagsakay-theme-change", handleThemeChange);
+});
 </script>
 
 <template>
   <div class="flex min-h-[85vh] items-center justify-center p-6">
     <div class="card bg-base-200 shadow-xl w-full max-w-lg">
       <div class="card-body p-8">
+        <div class="flex justify-end mb-2">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :aria-label="`Switch to ${nextThemeLabel} mode`"
+            :title="`Switch to ${nextThemeLabel} mode`"
+            @click="toggleTheme"
+          >
+            <svg
+              v-if="activeTheme === 'dark'"
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm0 13a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zm8-5a1 1 0 010 2h-1a1 1 0 110-2h1zM4 10a1 1 0 010 2H3a1 1 0 110-2h1zm10.95 4.536a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414-1.414l.707-.707zM5.757 5.343a1 1 0 010 1.414l-.707.707A1 1 0 113.636 6.05l.707-.707a1 1 0 011.414 0zm10.607 2.121a1 1 0 10-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM5.05 14.95a1 1 0 00-1.414 1.414l.707.707a1 1 0 001.414-1.414l-.707-.707zM10 6a4 4 0 100 8 4 4 0 000-8z"
+              />
+            </svg>
+            <svg
+              v-else
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21.752 15.002A9.718 9.718 0 0112 21c-5.385 0-9.75-4.365-9.75-9.75 0-4.055 2.477-7.53 6-9 0 0-1.5 6 3 9.75s10.5 3 10.5 3z"
+              />
+            </svg>
+            <span class="ml-2">{{ nextThemeLabel }} mode</span>
+          </button>
+        </div>
         <h2 class="card-title text-3xl font-bold justify-center mb-6">
           Register for TagSakay
         </h2>
@@ -132,6 +248,23 @@ const register = async () => {
             />
           </svg>
           <span>{{ error }}</span>
+        </div>
+
+        <div v-if="success" class="alert alert-success mb-6" role="alert">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-6 w-6 shrink-0 stroke-current"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          <span>{{ success }}</span>
         </div>
 
         <form @submit.prevent="register" class="space-y-6">
@@ -177,14 +310,15 @@ const register = async () => {
                 id="password"
                 name="password"
                 v-model="userData.password"
-                placeholder="Password (min 8 characters)"
-                class="input input-bordered input-primary w-full pr-10"
+                placeholder="Password (min 15 characters)"
+                class="input input-bordered input-primary w-full pr-14"
                 required
                 autocomplete="new-password"
               />
               <button
                 type="button"
-                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary"
+                aria-label="Toggle password visibility"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary z-20 pointer-events-auto opacity-100 focus:outline-none"
                 @click="showPassword = !showPassword"
               >
                 <svg
@@ -277,7 +411,7 @@ const register = async () => {
                 v-model="confirmPassword"
                 placeholder="Confirm Password"
                 :class="[
-                  'input input-bordered w-full pr-10',
+                  'input input-bordered w-full pr-14',
                   passwordsMatch ? 'input-primary' : 'input-error',
                 ]"
                 required
@@ -285,7 +419,8 @@ const register = async () => {
               />
               <button
                 type="button"
-                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary"
+                aria-label="Toggle confirm password visibility"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary z-20 pointer-events-auto opacity-100 focus:outline-none"
                 @click="showConfirmPassword = !showConfirmPassword"
               >
                 <svg

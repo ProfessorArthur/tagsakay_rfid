@@ -68,7 +68,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, onMounted } from "vue";
 import rfidStatsService, { type DeviceStatus } from "../services/rfidStats";
 
 const devices = ref<DeviceStatus[]>([]);
@@ -85,8 +85,15 @@ const refreshDevices = async () => {
   }
 };
 
-const formatTimestamp = (timestamp: string): string => {
+const formatTimestamp = (timestamp: string | null): string => {
+  if (!timestamp) {
+    return "Never";
+  }
+
   const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
 
   // If it's today, show "Today at HH:MM"
   const today = new Date();
@@ -116,23 +123,7 @@ const formatTimestamp = (timestamp: string): string => {
   });
 };
 
-// Auto-refresh every 30 seconds
-let refreshInterval: number | null = null;
-
 onMounted(() => {
   refreshDevices();
-
-  // Set up auto-refresh
-  refreshInterval = window.setInterval(() => {
-    refreshDevices();
-  }, 30000);
-});
-
-// Clean up interval when component is unmounted
-onBeforeUnmount(() => {
-  if (refreshInterval) {
-    clearInterval(refreshInterval);
-    refreshInterval = null;
-  }
 });
 </script>

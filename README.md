@@ -1,8 +1,8 @@
-﻿# TagSakay RFID Queue Management System
+﻿A Non-Fork of the TagSakay Project from my Student Account
+
+# TagSakay RFID Queue Management System
 
 A comprehensive RFID-based tricycle queue management system with ESP32 integration, user management, real-time monitoring capabilities, and OWASP-compliant security.
-
-This repository is the public, tinker-friendly edition of TagSakay. It is intended for learning, experimentation, and community contributions.
 
 ## Project Overview
 
@@ -235,7 +235,7 @@ The backend-workers implementation follows OWASP Top 10 2021 guidelines:
 
 ### Password Requirements
 
-- Minimum 8 characters (recommended 15+ for high security)
+- Minimum 15 characters (OWASP: 8 with MFA, 15 without MFA; registration requires 15)
 - Must include:
   - Uppercase letters (A-Z)
   - Lowercase letters (a-z)

@@ -21,45 +21,67 @@ void drawPixelDigit(int x, int y, int digit, uint16_t color) {
     byte pattern = DIGIT_PATTERNS[digit][row];
     for (int col = 0; col < 3; col++) {
       if (pattern & (1 << (2 - col))) {
-        dma_display->drawPixel(x + col, y + row, color);
+        virtualDisp->drawPixel(x + col, y + row, color);
       } else {
-        dma_display->drawPixel(x + col, y + row, COLOR_BLACK);
+        virtualDisp->drawPixel(x + col, y + row, COLOR_BLACK);
       }
     }
   }
 }
 
 void drawPixelNumber(int x, int y, int number, uint16_t color) {
-  if (number < 10) {
-    // Clear tens place
-    for (int row = 0; row < 5; row++) {
-      for (int col = 0; col < 3; col++) {
-        dma_display->drawPixel(x + col, y + row, COLOR_BLACK);
-      }
+  int baseX = x + LED_MATRIX_SCOOT_X;
+  // Clear area for two digits to avoid artifacts
+  for (int row = 0; row < 5; row++) {
+    for (int col = 0; col < DIGIT_WIDTH * 2; col++) {
+      virtualDisp->drawPixel(baseX + col, y + row, COLOR_BLACK);
     }
-    // Draw ones place right-aligned
-    drawPixelDigit(x + DIGIT_WIDTH, y, number, color);
+  }
+  if (number < 10) {
+    if (number == 0) {
+      // Do not draw 00 for empty/zero; area already cleared above
+      return;
+    }
+    if (number > 0) {
+      // Draw tens place as '0', then the ones place as the number to get leading zero (01..09)
+      drawPixelDigit(baseX, y, 0, color);
+      drawPixelDigit(baseX + DIGIT_WIDTH, y, number, color);
+    } else {
+      // number == 0: keep area clear (no 00 shown)
+    }
   } else {
     int tens = number / 10;
     int ones = number % 10;
-    drawPixelDigit(x, y, tens, color);
-    drawPixelDigit(x + DIGIT_WIDTH, y, ones, color);
+    drawPixelDigit(baseX, y, tens, color);
+    drawPixelDigit(baseX + DIGIT_WIDTH, y, ones, color);
   }
 }
 
 void drawLargePixelNumber(int x, int y, int number, uint16_t color) {
   int scale = 3;
-  
+  int baseX = x + LED_MATRIX_SCOOT_X;
+  // Clear area for scaled two-digit number (6 cols by 5 rows if scale=3, but safe region)
+  for (int row = 0; row < 5; row++) {
+    for (int col = 0; col < (3 * 2 * scale); col++) {
+      virtualDisp->fillRect(baseX + col, y + row * scale, 1, scale, COLOR_BLACK);
+    }
+  }
   if (number < 10) {
+    // Draw tens place as '0' at the left side
+    for (int row = 0; row < 5; row++) {
+      byte pattern = DIGIT_PATTERNS[0][row];
+      for (int col = 0; col < 3; col++) {
+        if (pattern & (1 << (2 - col))) {
+          virtualDisp->fillRect(baseX + col * scale, y + row * scale, scale, scale, color);
+        }
+      }
+    }
+    // Draw ones place at the normal ones position (right side)
     for (int row = 0; row < 5; row++) {
       byte pattern = DIGIT_PATTERNS[number][row];
       for (int col = 0; col < 3; col++) {
         if (pattern & (1 << (2 - col))) {
-          dma_display->fillRect(
-            x + col * scale + 6 * scale,
-            y + row * scale,
-            scale, scale, color
-          );
+          virtualDisp->fillRect(baseX + col * scale + 4 * scale, y + row * scale, scale, scale, color);
         }
       }
     }
@@ -71,7 +93,7 @@ void drawLargePixelNumber(int x, int y, int number, uint16_t color) {
       byte pattern = DIGIT_PATTERNS[tens][row];
       for (int col = 0; col < 3; col++) {
         if (pattern & (1 << (2 - col))) {
-          dma_display->fillRect(x + col * scale, y + row * scale, scale, scale, color);
+          virtualDisp->fillRect(baseX + col * scale, y + row * scale, scale, scale, color);
         }
       }
     }
@@ -80,7 +102,7 @@ void drawLargePixelNumber(int x, int y, int number, uint16_t color) {
       byte pattern = DIGIT_PATTERNS[ones][row];
       for (int col = 0; col < 3; col++) {
         if (pattern & (1 << (2 - col))) {
-          dma_display->fillRect(x + col * scale + 4 * scale, y + row * scale, scale, scale, color);
+          virtualDisp->fillRect(baseX + col * scale + 4 * scale, y + row * scale, scale, scale, color);
         }
       }
     }
@@ -89,6 +111,38 @@ void drawLargePixelNumber(int x, int y, int number, uint16_t color) {
 
 void drawPixelPipe(int x, int y, uint16_t color) {
   for (int i = 0; i < 5; i++) {
-    dma_display->drawPixel(x, y + i, color);
+    virtualDisp->drawPixel(x, y + i, color);
+  }
+}
+
+void drawPixelNumberString(int x, int y, const String& value, int maxDigits, uint16_t color) {
+  int constrainedDigits = maxDigits;
+  if (constrainedDigits < 1) {
+    constrainedDigits = 1;
+  }
+
+  int areaWidth = constrainedDigits * DIGIT_WIDTH;
+
+  for (int row = 0; row < 5; row++) {
+    for (int col = 0; col < areaWidth; col++) {
+      virtualDisp->drawPixel(x + col, y + row, COLOR_BLACK);
+    }
+  }
+
+  String digits = value;
+  int length = digits.length();
+  if (length > constrainedDigits) {
+    digits = digits.substring(length - constrainedDigits);
+    length = digits.length();
+  }
+
+  int startX = x + (constrainedDigits - length) * DIGIT_WIDTH;
+  startX += LED_MATRIX_SCOOT_X;
+
+  for (int i = 0; i < length; i++) {
+    char ch = digits.charAt(i);
+    if (ch >= '0' && ch <= '9') {
+      drawPixelDigit(startX + (i * DIGIT_WIDTH), y, ch - '0', color);
+    }
   }
 }

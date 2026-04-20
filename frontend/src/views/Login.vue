@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import authService from "../services/auth";
+import useToast from "../composables/useToast";
+import {
+  applyThemeMode,
+  getStoredThemeMode,
+  setStoredThemeMode,
+  type ThemeName,
+} from "../utils/theme";
+
+const { success: toastSuccess, error: toastError } = useToast();
 import type { LoginCredentials } from "../services/auth";
 
 const router = useRouter();
@@ -15,6 +24,30 @@ const showPassword = ref(false);
 const rateLimited = ref(false);
 const retryAfter = ref("");
 const accountLocked = ref(false);
+const activeTheme = ref<ThemeName>(applyThemeMode(getStoredThemeMode()));
+
+const nextThemeLabel = computed(() =>
+  activeTheme.value === "dark" ? "light" : "dark"
+);
+
+const syncActiveTheme = () => {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const current = document.documentElement.getAttribute("data-theme");
+  activeTheme.value = current === "dark" ? "dark" : "light";
+};
+
+const handleThemeChange = () => {
+  syncActiveTheme();
+};
+
+const toggleTheme = () => {
+  const nextTheme: ThemeName = activeTheme.value === "dark" ? "light" : "dark";
+  setStoredThemeMode(nextTheme);
+  activeTheme.value = applyThemeMode(nextTheme);
+};
 
 const login = async () => {
   loading.value = true;
@@ -25,6 +58,7 @@ const login = async () => {
   try {
     const response = await authService.login(credentials.value);
     authService.saveUserData(response);
+    toastSuccess && toastSuccess("Logged in — welcome back");
     router.push("/dashboard");
   } catch (err: any) {
     // Handle rate limiting (429)
@@ -58,8 +92,10 @@ const login = async () => {
     }
     // Generic error
     else {
-      error.value =
-        err.message || "Login failed. Please check your credentials.";
+      const msg =
+        err?.message || "Login failed. Please check your credentials.";
+      error.value = msg;
+      toastError && toastError(msg);
     }
   } finally {
     loading.value = false;
@@ -72,12 +108,58 @@ const errorAlertClass = computed(() => {
   if (accountLocked.value) return "alert-error";
   return "alert-error";
 });
+
+onMounted(() => {
+  syncActiveTheme();
+  window.addEventListener("tagsakay-theme-change", handleThemeChange);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("tagsakay-theme-change", handleThemeChange);
+});
 </script>
 
 <template>
   <div class="flex min-h-[85vh] items-center justify-center p-6">
     <div class="card bg-base-200 shadow-xl w-full max-w-lg">
       <div class="card-body p-8">
+        <div class="flex justify-end mb-2">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :aria-label="`Switch to ${nextThemeLabel} mode`"
+            :title="`Switch to ${nextThemeLabel} mode`"
+            @click="toggleTheme"
+          >
+            <svg
+              v-if="activeTheme === 'dark'"
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm0 13a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zm8-5a1 1 0 010 2h-1a1 1 0 110-2h1zM4 10a1 1 0 010 2H3a1 1 0 110-2h1zm10.95 4.536a1 1 0 011.414 1.414l-.707.707a1 1 0 01-1.414-1.414l.707-.707zM5.757 5.343a1 1 0 010 1.414l-.707.707A1 1 0 113.636 6.05l.707-.707a1 1 0 011.414 0zm10.607 2.121a1 1 0 10-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM5.05 14.95a1 1 0 00-1.414 1.414l.707.707a1 1 0 001.414-1.414l-.707-.707zM10 6a4 4 0 100 8 4 4 0 000-8z"
+              />
+            </svg>
+            <svg
+              v-else
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21.752 15.002A9.718 9.718 0 0112 21c-5.385 0-9.75-4.365-9.75-9.75 0-4.055 2.477-7.53 6-9 0 0-1.5 6 3 9.75s10.5 3 10.5 3z"
+              />
+            </svg>
+            <span class="ml-2">{{ nextThemeLabel }} mode</span>
+          </button>
+        </div>
         <h2 class="card-title text-3xl font-bold justify-center mb-6">
           Login to TagSakay
         </h2>
@@ -145,13 +227,14 @@ const errorAlertClass = computed(() => {
                 name="password"
                 v-model="credentials.password"
                 placeholder="Password"
-                class="input input-bordered input-primary w-full pr-10"
+                class="input input-bordered input-primary w-full pr-14"
                 required
                 autocomplete="current-password"
               />
               <button
                 type="button"
-                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary"
+                aria-label="Toggle password visibility"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-primary z-20 pointer-events-auto opacity-100 focus:outline-none"
                 @click="showPassword = !showPassword"
               >
                 <!-- Eye icon when password is hidden -->

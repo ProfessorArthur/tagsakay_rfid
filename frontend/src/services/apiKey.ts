@@ -38,13 +38,18 @@ interface UpdateApiKeyData {
 /**
  * Validate API key name
  */
-const validateApiKeyName = (name: string): { valid: boolean; error?: string } => {
+const validateApiKeyName = (
+  name: string
+): { valid: boolean; error?: string } => {
   if (!name || name.trim().length === 0) {
     return { valid: false, error: "API key name is required" };
   }
 
   if (name.length < 3 || name.length > 100) {
-    return { valid: false, error: "API key name must be between 3 and 100 characters" };
+    return {
+      valid: false,
+      error: "API key name must be between 3 and 100 characters",
+    };
   }
 
   return { valid: true };
@@ -53,7 +58,9 @@ const validateApiKeyName = (name: string): { valid: boolean; error?: string } =>
 /**
  * Validate device ID format
  */
-const validateDeviceId = (deviceId: string): { valid: boolean; error?: string } => {
+const validateDeviceId = (
+  deviceId: string
+): { valid: boolean; error?: string } => {
   if (!deviceId || deviceId.trim().length === 0) {
     return { valid: false, error: "Device ID is required" };
   }
@@ -61,9 +68,9 @@ const validateDeviceId = (deviceId: string): { valid: boolean; error?: string } 
   // Device ID should be alphanumeric, typically MAC address without colons
   const deviceIdRegex = /^[a-zA-Z0-9-_]{6,50}$/;
   if (!deviceIdRegex.test(deviceId)) {
-    return { 
-      valid: false, 
-      error: "Invalid device ID format (alphanumeric, 6-50 characters)" 
+    return {
+      valid: false,
+      error: "Invalid device ID format (alphanumeric, 6-50 characters)",
     };
   }
 
@@ -75,7 +82,9 @@ const apiKeyService = {
    * Create a new API key for a device
    * Note: The full API key is only returned once during creation
    */
-  async createApiKey(data: CreateApiKeyData): Promise<ApiKeyResponse> {
+  async createApiKey(
+    data: CreateApiKeyData
+  ): Promise<ApiResponse<ApiKeyResponse>> {
     // Client-side validation
     const nameValidation = validateApiKeyName(data.name);
     if (!nameValidation.valid) {
@@ -104,13 +113,13 @@ const apiKeyService = {
   /**
    * List all API keys (without the full key value)
    */
-  async listApiKeys(): Promise<ApiKey[]> {
+  async listApiKeys(): Promise<ApiResponse<ApiKey[]>> {
     try {
       const response = await apiClient.get("/keys");
-      return response.data || [];
+      return response.data || { success: false, data: [] };
     } catch (error: any) {
       console.error("Failed to fetch API keys:", error);
-      return [];
+      return { success: false, data: [] };
     }
   },
 

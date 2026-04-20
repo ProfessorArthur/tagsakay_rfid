@@ -6,11 +6,11 @@
 
 extern HardwareSerial RFIDSerial;
 extern String messageBuffer;
+extern bool operationModeActive;
 
 void initializeUART();
 void processUARTCommand();
-void parseCommand(String command);
-void handleCommand(String cmd, String data1, String data2);
-void sendACK(String command);
+void parseCommand(const String& command);
+void handleCommand(const String& cmd, const String& data1, const String& data2);
 
 #endif // UART_HANDLER_H

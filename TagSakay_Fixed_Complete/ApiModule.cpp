@@ -1,5 +1,53 @@
 #include "ApiModule.h"
 
+namespace {
+  constexpr unsigned long RETRY_WAIT_SLICE_MS = 25;
+  constexpr unsigned long RETRY_DELAY_MAX_MS = 8000;
+
+  bool isRetryableResponse(const ApiResponse& response) {
+    if (response.result == API_SUCCESS) {
+      return false;
+    }
+
+    if (
+      response.result == API_NETWORK_ERROR ||
+      response.result == API_TIMEOUT
+    ) {
+      return true;
+    }
+
+    if (response.result == API_HTTP_ERROR) {
+      return response.httpCode == 429 || response.httpCode >= 500;
+    }
+
+    return false;
+  }
+
+  bool waitForRetryWindow(unsigned long totalDelayMs) {
+    const unsigned long start = millis();
+
+    while ((millis() - start) < totalDelayMs) {
+      if (WiFi.status() != WL_CONNECTED) {
+        return false;
+      }
+
+      unsigned long elapsed = millis() - start;
+      unsigned long remaining =
+        totalDelayMs > elapsed ? totalDelayMs - elapsed : 0;
+      if (remaining == 0) {
+        break;
+      }
+
+      unsigned long waitMs =
+        remaining < RETRY_WAIT_SLICE_MS ? remaining : RETRY_WAIT_SLICE_MS;
+      delay(waitMs);
+      yield();
+    }
+
+    return WiFi.status() == WL_CONNECTED;
+  }
+}
+
 ApiModule::ApiModule() 
   : initialized(false), lastRequestTime(0), consecutiveFailures(0),
     totalRequests(0), successfulRequests(0), failedRequests(0), totalResponseTime(0) {
@@ -179,11 +227,20 @@ ApiResponse ApiModule::sendRequestWithRetry(const String& method, const String& 
   while (attempt <= retryConfig.maxRetries) {
     if (attempt > 0) {
       LOG_INFO("Retry attempt " + String(attempt) + "/" + String(retryConfig.maxRetries));
-      delay(retryDelay);
+
+      if (!waitForRetryWindow(retryDelay)) {
+        response.result = API_NETWORK_ERROR;
+        response.httpCode = 0;
+        response.data = "";
+        response.error = "WiFi disconnected during retry wait";
+        return response;
+      }
       
       // Exponential backoff
       if (retryConfig.exponentialBackoff) {
-        retryDelay *= 2;
+        unsigned long nextDelay = retryDelay * 2;
+        retryDelay =
+          nextDelay > RETRY_DELAY_MAX_MS ? RETRY_DELAY_MAX_MS : nextDelay;
       }
     }
     
@@ -195,6 +252,10 @@ ApiResponse ApiModule::sendRequestWithRetry(const String& method, const String& 
       }
       return response;
     }
+
+    if (!isRetryableResponse(response)) {
+      return response;
+    }
     
     attempt++;
   }
@@ -203,7 +264,11 @@ ApiResponse ApiModule::sendRequestWithRetry(const String& method, const String& 
   return response;
 }
 
-ApiResponse ApiModule::sendScan(const String& tagId, const String& location) {
+ApiResponse ApiModule::sendScan(
+  const String& tagId,
+  const String& location,
+  const String& eventType
+) {
   if (!IS_VALID_TAG_ID(tagId)) {
     ApiResponse response;
     response.result = API_JSON_ERROR;
@@ -222,6 +287,12 @@ ApiResponse ApiModule::sendScan(const String& tagId, const String& location) {
     doc["location"] = location;
   } else {
     doc["location"] = deviceConfig.location;
+  }
+
+  if (eventType.length() > 0) {
+    String normalizedEventType = eventType;
+    normalizedEventType.toLowerCase();
+    doc["eventType"] = normalizedEventType;
   }
   
   // Add device context
@@ -245,6 +316,12 @@ ApiResponse ApiModule::sendHeartbeat(bool includeStats) {
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["location"] = deviceConfig.location;
   doc["firmwareVersion"] = FIRMWARE_VERSION;
+  // Sync key device flags so server UI reflects current state without waiting for poll
+  doc["registrationMode"] = registrationMode;
+  doc["scanMode"] = deviceConfig.scanMode;
+  if (expectedRegistrationTagId.length() > 0) {
+    doc["pendingRegistrationTagId"] = expectedRegistrationTagId;
+  }
   
   if (includeStats) {
     JsonObject stats = doc.createNestedObject("stats");
@@ -264,7 +341,12 @@ ApiResponse ApiModule::sendHeartbeat(bool includeStats) {
 
 ApiResponse ApiModule::checkConnection() {
   LOG_DEBUG("Checking API connection");
-  return sendRequest("GET", "/api/health", "", false);  // No retry for health check
+  ApiResponse response = sendRequest("GET", "/health", "", false);
+  if (response.result == API_HTTP_ERROR && response.httpCode == 404) {
+    LOG_WARNING("/health not found, attempting legacy /api/health");
+    response = sendRequest("GET", "/api/health", "", false);
+  }
+  return response;
 }
 
 ApiResponse ApiModule::getRegistrationStatus() {
@@ -298,6 +380,50 @@ ApiResponse ApiModule::sendQueueOverride(int queueNumber, const String& reason) 
   return sendRequest("POST", endpoint, payload);
 }
 
+  ApiResponse ApiModule::sendQueueSnapshot(
+    const String& cascade,
+    const String slotValues[],
+    int slotCount,
+    bool operationModeActive
+  ) {
+    StaticJsonDocument<6144> doc;
+    doc["cascade"] = cascade;
+    doc["slotCount"] = slotCount;
+    doc["operationModeActive"] = operationModeActive;
+
+    JsonArray slots = doc.createNestedArray("slots");
+    int totalActive = 0;
+
+    for (int i = 0; i < slotCount; i++) {
+      JsonObject slot = slots.createNestedObject();
+      slot["slotIndex"] = i;
+
+      String value = slotValues[i];
+      value.trim();
+      value.toUpperCase();
+
+      bool hasValue = value.length() > 0 && value != "0";
+      slot["ledValue"] = hasValue ? value : "0";
+      slot["displayValue"] = hasValue ? value : "---";
+      slot["state"] = hasValue ? "ongoing" : "empty";
+      slot["scanId"] = nullptr;
+      slot["scanTime"] = nullptr;
+      slot["isLatest"] = hasValue;
+
+      if (hasValue) {
+        totalActive++;
+      }
+    }
+
+    doc["totalActive"] = totalActive;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    String endpoint = String("/api/devices/") + deviceId + "/queue/snapshot";
+    return sendRequest("POST", endpoint, payload, false);
+  }
+
 ApiResponse ApiModule::reportStatus(const String& status, const String& reason) {
   String endpoint = "/api/devices/" + deviceId + "/status";
   
@@ -312,6 +438,11 @@ ApiResponse ApiModule::reportStatus(const String& status, const String& reason) 
   doc["wifiConnected"] = systemStatus.wifiConnected;
   doc["rfidInitialized"] = systemStatus.rfidInitialized;
   doc["offlineMode"] = systemStatus.offlineMode;
+  doc["registrationMode"] = registrationMode;
+  doc["scanMode"] = deviceConfig.scanMode;
+  if (expectedRegistrationTagId.length() > 0) {
+    doc["pendingRegistrationTagId"] = expectedRegistrationTagId;
+  }
   
   String payload;
   serializeJson(doc, payload);
@@ -372,6 +503,87 @@ ApiResponse ApiModule::reportError(const String& errorType, const String& errorM
 ApiResponse ApiModule::syncTime() {
   LOG_DEBUG("Syncing time from server");
   return sendRequest("GET", "/api/time", "");
+}
+
+RfidDetailResult ApiModule::getRfidDetails(const String& tagId) {
+  RfidDetailResult result;
+
+  if (!initialized) {
+    result.error = "API not initialized";
+    return result;
+  }
+
+  String normalizedTag = tagId;
+  normalizedTag.trim();
+  normalizedTag.toUpperCase();
+
+  if (!IS_VALID_TAG_ID(normalizedTag)) {
+    result.error = "Invalid tag ID";
+    return result;
+  }
+
+  ApiResponse response = sendRequest("GET", "/api/rfid/" + normalizedTag, "");
+  result.httpCode = response.httpCode;
+
+  if (response.result != API_SUCCESS) {
+    if (response.httpCode == 404) {
+      result.success = true;
+      result.detailsAvailable = false;
+      result.tagId = normalizedTag;
+      result.error = response.error.length() ? response.error : String("RFID not found");
+    } else {
+      result.error = response.error.length() ? response.error : String("Request failed");
+    }
+    return result;
+  }
+
+  StaticJsonDocument<2048> doc;
+  DeserializationError error = deserializeJson(doc, response.data);
+  if (error) {
+    result.error = String("Parse error: ") + error.c_str();
+    return result;
+  }
+
+  bool success = doc["success"] | false;
+  if (!success) {
+    result.error = doc["message"] | "Details unavailable";
+    return result;
+  }
+
+  JsonObject data = doc["data"];
+  JsonObject rfid = data["rfid"];
+  if (rfid.isNull()) {
+    result.error = "Details unavailable";
+    return result;
+  }
+
+  result.success = true;
+  result.detailsAvailable = true;
+  result.tagId = rfid["tagId"].is<const char*>() ? String(rfid["tagId"].as<const char*>()) : normalizedTag;
+  result.unitNumber = rfid["unitNumber"].is<const char*>() ? String(rfid["unitNumber"].as<const char*>()) : String("");
+  result.tagActive = rfid["isActive"].is<bool>() ? rfid["isActive"].as<bool>() : false;
+
+  JsonObject user = rfid["user"];
+  if (!user.isNull()) {
+    const char* name = user["name"] | "";
+    const char* email = user["email"] | "";
+
+    String selectedName = String(name);
+    if (selectedName.length() == 0) {
+      selectedName = String(email);
+    }
+
+    result.userName = selectedName;
+    result.userAssigned = selectedName.length() > 0;
+    result.userActive = user["isActive"].is<bool>() ? user["isActive"].as<bool>() : true;
+  } else {
+    result.userName = "";
+    result.userAssigned = false;
+    result.userActive = false;
+  }
+
+  result.error = "";
+  return result;
 }
 
 ApiResponse ApiModule::sendBatchScans(const String scans[], int count) {

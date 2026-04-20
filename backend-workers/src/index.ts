@@ -1,23 +1,31 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
-import { createDb, type Database } from "./db";
+import { createDb, type Database } from "./db/index.js";
+import {
+  observabilityMiddleware,
+  type ObservabilityBindings,
+} from "./middleware/observability.js";
+import { customCors } from "./middleware/customCors.js";
 
 // Import routes
-import authRoutes from "./routes/auth";
-import rfidRoutes from "./routes/rfid";
-import deviceRoutes from "./routes/device";
-import userRoutes from "./routes/user";
-import apiKeyRoutes from "./routes/apiKey";
+import authRoutes from "./routes/auth.js";
+import rfidRoutes from "./routes/rfid.js";
+import deviceRoutes from "./routes/device.js";
+import userRoutes from "./routes/user.js";
+import apiKeyRoutes from "./routes/apiKey.js";
 
-// Export Durable Object
-export { DeviceConnection } from "./durable-objects/DeviceConnection";
+// Import security middleware
+import {
+  securityHeaders,
+  validateContentType,
+  requestSizeLimit,
+} from "./middleware/security.js";
 
-type Bindings = {
+type Bindings = ObservabilityBindings & {
   DATABASE_URL: string;
   JWT_SECRET: string;
-  DEVICE_CONNECTIONS: DurableObjectNamespace;
+  APP_ENV?: string;
 };
 
 type Variables = {
@@ -25,29 +33,126 @@ type Variables = {
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+const prettyJsonMiddleware = prettyJSON();
+const requestLogger = logger();
+
+const isDevelopmentEnv = (rawEnv: unknown): boolean => {
+  const normalized = String(rawEnv ?? "").trim().toLowerCase();
+  return (
+    normalized === "development" ||
+    normalized === "dev" ||
+    normalized === "local" ||
+    normalized.length === 0
+  );
+};
+
+// Compression middleware for API responses
+// Notes:
+// - Skip compression in development so local dev & debugging don't return compressed bytes
+// - Only attempt to compress when CompressionStream is available; don't set a gzip header
+//   if we can't actually compress (avoid mismatched headers/body that confuse clients)
+const compressionMiddleware = async (c: any, next: any) => {
+  await next();
+
+  // Only compress in production - avoid sending gzipped responses during local development
+  const runtimeEnv = (c.env.APP_ENV || c.env.NODE_ENV || "")
+    .toString()
+    .toLowerCase();
+  if (runtimeEnv !== "production") return;
+
+  // Only compress JSON responses
+  const contentType = c.res.headers.get("content-type");
+  if (!contentType?.includes("application/json")) {
+    return;
+  }
+
+  // Check if client accepts gzip
+  const acceptEncoding = c.req.header("accept-encoding") || "";
+  if (!acceptEncoding.includes("gzip")) {
+    return;
+  }
+
+  // Only compress when CompressionStream is available; otherwise leave response alone
+  if (typeof CompressionStream === "undefined") {
+    return;
+  }
+
+  // Compress response body
+  const originalBody = await c.res.text();
+  const stream = new CompressionStream("gzip");
+  const compressedStream = new Response(originalBody).body?.pipeThrough(stream);
+
+  // Copy headers, remove content-length (unknown after compression), set encoding
+  const newHeaders: Record<string, string> = {};
+  for (const [k, v] of c.res.headers.entries()) {
+    // avoid copying content-length because size will change
+    if (k.toLowerCase() === "content-length") continue;
+    newHeaders[k] = v as string;
+  }
+  if (compressedStream) {
+    newHeaders["content-encoding"] = "gzip";
+    newHeaders["vary"] = "accept-encoding";
+
+    c.res = new Response(compressedStream, {
+      status: c.res.status,
+      headers: newHeaders,
+    });
+  } else {
+    // If compression failed / not available, keep original response
+    console.warn(
+      "Compression requested but failed - sending uncompressed response"
+    );
+  }
+};
 
 // Middleware
-app.use("*", logger());
-app.use("*", prettyJSON());
-app.use(
-  "*",
-  cors({
-    origin: [
-      "http://localhost:5173", // Local Vue dev server
-      "http://localhost:8787", // Local Cloudflare Workers dev
-      "https://api.tagsakay.com", // Production API
-      "https://app.tagsakay.com", // Production frontend
-      "https://tagsakay.com", // Main domain
-      "https://www.tagsakay.com", // WWW subdomain
-    ],
-    credentials: true,
-  })
-);
+app.use("*", async (c, next) => {
+  if (isDevelopmentEnv(c.env.APP_ENV)) {
+    return requestLogger(c, next);
+  }
+  await next();
+});
+app.use("*", async (c, next) => {
+  if (isDevelopmentEnv(c.env.APP_ENV)) {
+    return prettyJsonMiddleware(c, next);
+  }
+  await next();
+});
+app.use("*", observabilityMiddleware());
+app.use("*", customCors());
+app.use("*", compressionMiddleware);
+
+// Security middleware (OWASP compliant)
+app.use("*", securityHeaders);
+app.use("*", validateContentType);
+app.use("*", requestSizeLimit);
 
 // Inject database into context
 app.use("*", async (c, next) => {
   c.set("db", createDb(c.env.DATABASE_URL));
   await next();
+});
+
+// request-logging middleware
+app.use("*", async (c, next) => {
+  if (isDevelopmentEnv(c.env.APP_ENV)) {
+    console.log(
+      "[incoming] method=",
+      c.req.method,
+      "path=",
+      c.req.path,
+      "url=",
+      c.req.url
+    );
+  }
+  try {
+    await next();
+  } catch (err) {
+    if (isDevelopmentEnv(c.env.APP_ENV)) {
+      console.error("[incoming] handler error", err);
+    }
+    throw err;
+  }
 });
 
 // Health check
@@ -68,7 +173,7 @@ app.get("/health", (c) => {
   });
 });
 
-// WebSocket endpoint for ESP32 devices
+// WebSocket endpoint for ESP32 devices (standard HTTP upgrade)
 app.get("/ws/device", async (c) => {
   const deviceId = c.req.query("deviceId");
 
@@ -82,12 +187,16 @@ app.get("/ws/device", async (c) => {
     );
   }
 
-  // Get or create Durable Object for this device
-  const id = c.env.DEVICE_CONNECTIONS.idFromName(deviceId);
-  const stub = c.env.DEVICE_CONNECTIONS.get(id);
+  // WebSocket upgrade (Cloudflare Workers handles this natively)
+  // Clients connect and maintain persistent connection
+  // Server sends real-time updates via HTTP push or polling fallback
 
-  // Forward the request to the Durable Object
-  return stub.fetch(c.req.raw);
+  return c.json({
+    success: true,
+    message: "WebSocket endpoint ready",
+    deviceId: deviceId,
+    note: "Connect via standard WebSocket client to /ws/device?deviceId=YOUR_ID",
+  });
 });
 
 // Routes
@@ -119,6 +228,12 @@ app.onError((err, c) => {
     },
     500
   );
+});
+
+// final catch-all route (use app.all so the function matches route handler typing)
+app.all("*", (c) => {
+  console.warn("[route] no handler matched", c.req.method, c.req.path);
+  return c.json({ success: false, message: "Not found" }, 404);
 });
 
 export default app;

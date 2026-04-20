@@ -22,7 +22,7 @@ if (missingVars.length > 0) {
 // API Configuration
 export const API_CONFIG = {
   BASE_URL: import.meta.env.VITE_API_URL || "http://localhost:8787/api",
-  TIMEOUT: parseInt(import.meta.env.VITE_API_TIMEOUT) || 10000,
+  TIMEOUT: parseInt(import.meta.env.VITE_API_TIMEOUT) || 30000, // Increased from 10s to 30s
 };
 
 // App Configuration

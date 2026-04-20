@@ -44,6 +44,7 @@ const seed = async () => {
         password: await hashPassword("admin123"),
         role: "superadmin",
         isActive: true,
+        isEmailVerified: true,
       })
       .returning();
     console.log("   ✅ SuperAdmin:", admin.email);
@@ -57,6 +58,7 @@ const seed = async () => {
         password: await hashPassword("admin123"),
         role: "admin",
         isActive: true,
+        isEmailVerified: true,
       })
       .returning();
     console.log("   ✅ Admin:", regularAdmin.email);
@@ -71,6 +73,7 @@ const seed = async () => {
         role: "driver",
         isActive: true,
         rfidTag: "TEST001",
+        isEmailVerified: true,
       })
       .returning();
     console.log("   ✅ Driver:", driver.email);
@@ -85,6 +88,7 @@ const seed = async () => {
         role: "driver",
         isActive: false,
         rfidTag: "TEST999",
+        isEmailVerified: true,
       })
       .returning();
     console.log("   ✅ Inactive Driver:", inactiveDriver.email);

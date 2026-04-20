@@ -54,7 +54,7 @@ const testCases = [
     name: "Test User 1",
     expectedStrength: 0,
     shouldPass: false,
-    reason: "Less than 8 characters",
+    reason: "Less than 15 characters",
   },
   {
     name: "Very Weak - Only Lowercase",
@@ -152,7 +152,7 @@ async function runPasswordStrengthTest() {
   log("\n📋 Test Configuration:", "magenta");
   log(`   Base URL: ${BASE_URL}`);
   log(`   Test Cases: ${testCases.length}`);
-  log(`   OWASP Standards: Min 8 chars, complexity requirements`);
+  log(`   OWASP Standards: Min 15 chars (for registration), complexity requirements`);
 
   // Check if rate limit is active
   logInfo("\n⏱️  Checking if rate limit is currently active...");
@@ -167,11 +167,8 @@ async function runPasswordStrengthTest() {
   });
 
   if (checkResponse.status === 429) {
-    const retryAfter = checkResponse.headers.get("Retry-After") || "60";
+    const retryAfter = checkResponse.headers.get("Retry-After") || "5";
     logWarning(
-      `Rate limit is active! Waiting ${retryAfter} seconds before starting test...`
-    );
-    log(
       `   (This is expected if you ran the rate limit test recently)`,
       "yellow"
     );

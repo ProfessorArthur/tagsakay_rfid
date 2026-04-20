@@ -1,35 +1,62 @@
 <script setup lang="ts">
 import { RouterView, useRouter, useRoute } from "vue-router";
-import { ref, watchEffect, onMounted, computed } from "vue";
-import Navbar from "./components/Navbar.vue";
-import authService from "./services/auth";
+import {
+  ref,
+  watchEffect,
+  onMounted,
+  computed,
+  defineAsyncComponent,
+  onUnmounted,
+} from "vue";
+
+const SidebarLayout = defineAsyncComponent(
+  () => import("./components/SidebarLayout.vue")
+);
+const ToastContainer = defineAsyncComponent(
+  () => import("./components/ToastContainer.vue")
+);
+
+const getIsLoggedIn = (): boolean => !!localStorage.getItem("token");
 
 const router = useRouter();
 const route = useRoute();
-const isLoggedIn = ref(authService.isLoggedIn());
+const isLoggedIn = ref(getIsLoggedIn());
 
-// Check if current route is the dashboard (for special layout)
-const isDashboardRoute = computed(() => {
-  return route.path === "/dashboard";
+// Check if current route requires authentication
+const isAuthRoute = computed(() => {
+  return Boolean(route.meta.requiresAuth);
+});
+
+const isPublicLanding = computed(() => {
+  return Boolean(route.meta.publicLanding);
+});
+
+const showToastContainer = computed(() => {
+  return !isPublicLanding.value;
 });
 
 // Listen for changes in localStorage to update isLoggedIn reactively
-window.addEventListener("storage", () => {
-  isLoggedIn.value = authService.isLoggedIn();
+const handleStorage = () => {
+  isLoggedIn.value = getIsLoggedIn();
   checkAuthentication();
-});
+};
+
+window.addEventListener("storage", handleStorage);
 
 // Function to check authentication and redirect if needed
 const checkAuthentication = () => {
-  isLoggedIn.value = authService.isLoggedIn();
+  isLoggedIn.value = getIsLoggedIn();
 
-  // If not logged in and not on login or register page, redirect to login
-  if (
-    !isLoggedIn.value &&
-    router.currentRoute.value.path !== "/login" &&
-    router.currentRoute.value.path !== "/register"
-  ) {
+  const requiresAuth = Boolean(route.meta.requiresAuth);
+  const requiresGuest = Boolean(route.meta.requiresGuest);
+
+  if (!isLoggedIn.value && requiresAuth) {
     router.push("/login");
+    return;
+  }
+
+  if (isLoggedIn.value && requiresGuest) {
+    router.push("/dashboard");
   }
 };
 
@@ -38,22 +65,25 @@ watchEffect(checkAuthentication);
 
 // Initial check on component mount
 onMounted(checkAuthentication);
+onUnmounted(() => {
+  window.removeEventListener("storage", handleStorage);
+});
 </script>
 
 <template>
   <div class="min-h-screen bg-base-100">
-    <!-- Show the navbar only when logged in AND not on dashboard route -->
-    <Navbar v-if="isLoggedIn && !isDashboardRoute" />
-
-    <!-- For dashboard, don't wrap in container since it has its own layout -->
-    <template v-if="isDashboardRoute">
+    <!-- Use sidebar layout for authenticated routes -->
+    <SidebarLayout v-if="isLoggedIn && isAuthRoute">
       <RouterView />
-    </template>
+    </SidebarLayout>
 
-    <!-- For other pages, maintain current layout with container -->
+    <!-- Use simple layout for login/register pages -->
     <main v-else class="container mx-auto px-4 py-8">
       <RouterView />
     </main>
+
+    <!-- Global Toast Container -->
+    <ToastContainer v-if="showToastContainer" />
   </div>
 </template>
 

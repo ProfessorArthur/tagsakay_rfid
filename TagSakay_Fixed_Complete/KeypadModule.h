@@ -56,6 +56,7 @@ extern Keypad keypad;
 extern String keypadBuffer;
 extern bool keypadActive;
 extern bool keypadMenuActive;
+extern bool keypadMenuVisible;
 extern unsigned long keypadLastInput;
 
 // Keypad operations

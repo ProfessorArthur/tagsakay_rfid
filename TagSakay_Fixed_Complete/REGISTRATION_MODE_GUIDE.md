@@ -4,6 +4,12 @@
 
 Registration mode allows you to register new RFID tags to the system. When activated, the next scanned tag will be sent to the backend for registration instead of normal queue processing.
 
+This firmware uses an HTTP control path aligned with the Diagnostics utility:
+
+- Command polling: device calls `GET /api/devices/:deviceId/commands` every 5s (\`COMMAND_POLL_INTERVAL\`).
+- Heartbeats: device posts `/api/devices/:deviceId/heartbeat` every 30s (\`HEARTBEAT_INTERVAL\`).
+- Heartbeat payload includes `registrationMode`, `scanMode`, and `pendingRegistrationTagId` so the admin UI mirrors the device state quickly.
+
 ---
 
 ## How to Activate/Deactivate
@@ -172,7 +178,7 @@ Registration mode will automatically deactivate after **5 minutes** (configurabl
 1. User presses `###` or types `registration`
 2. System enters registration mode
 3. User scans RFID tag
-4. System sends tag to backend API via HTTP/WebSocket
+4. System sends tag to the backend API via HTTP
 5. Backend validates and registers tag
 6. System shows success/failure
 7. Auto-exits on success (stays on failure for retry)
@@ -182,12 +188,12 @@ Registration mode will automatically deactivate after **5 minutes** (configurabl
 The registration uses the same endpoint as normal scanning:
 
 ```
-POST /api/devices/{deviceId}/scan
+POST /api/rfid/scan
 {
-  "tagId": "04A3B2C1D5E6F7",
-  "deviceId": "001122334455",
-  "location": "Gate 1",
-  "timestamp": 1234567890
+   "tagId": "04A3B2C1D5E6F7",
+   "deviceId": "001122334455",
+   "location": "Gate 1",
+   "timestamp": 1234567890
 }
 ```
 

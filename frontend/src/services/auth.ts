@@ -1,5 +1,10 @@
-import apiClient from "./api";
 import type { ApiResponse } from "./api";
+import { API_CONFIG } from "../config/env";
+
+const getApiClient = async () => {
+  const module = await import("./api");
+  return module.default;
+};
 
 interface LoginCredentials {
   email: string;
@@ -43,9 +48,35 @@ const authService = {
    * Handles rate limiting (5 attempts/min) and account lockout (5 failed attempts)
    */
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
+    console.log("Login attempt:", {
+      email: credentials.email,
+      apiUrl: API_CONFIG.BASE_URL,
+    });
+
     try {
+      const apiClient = await getApiClient();
       const response = await apiClient.post("/auth/login", credentials);
-      return response.data;
+      console.log("Login response received:", {
+        status: response.status,
+        headers: response.headers,
+        dataType: typeof response.data,
+        dataKeys: response.data ? Object.keys(response.data) : "no data",
+      });
+
+      // Validate response structure
+      if (!response.data) {
+        throw new Error("Empty response from server");
+      }
+
+      const authData = response.data as AuthResponse;
+
+      // Validate required fields
+      if (!authData.token || !authData.user) {
+        console.error("Invalid auth response structure:", authData);
+        throw new Error("Invalid response format from server");
+      }
+
+      return authData;
     } catch (error: any) {
       // Enhanced error handling for rate limiting and account lockout
       if (error.response?.status === 429) {
@@ -62,6 +93,14 @@ const authService = {
         );
       }
 
+      // Log detailed error information for debugging
+      console.error("Login error:", {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message,
+      });
+
       // Generic error message for failed login (security best practice)
       throw new Error(error.message || "Invalid email or password");
     }
@@ -70,8 +109,9 @@ const authService = {
   /**
    * Register new user with password strength validation
    */
-  async register(userData: RegisterData): Promise<AuthResponse> {
+  async register(userData: RegisterData): Promise<any> {
     try {
+      const apiClient = await getApiClient();
       const response = await apiClient.post("/auth/register", userData);
       return response.data;
     } catch (error: any) {
@@ -95,14 +135,15 @@ const authService = {
     const feedback: string[] = [];
     let score = 0;
 
-    // Length check
-    if (password.length < 8) {
-      feedback.push("Password must be at least 8 characters");
+    // Length check (require strong password minimum)
+    if (password.length < 15) {
+      feedback.push("Password must be at least 15 characters");
       return { valid: false, score: 0, feedback };
     }
 
-    if (password.length >= 8) score++;
-    if (password.length >= 12) score++;
+    // Score increases for longer passwords
+    if (password.length >= 15) score++;
+    if (password.length >= 20) score++;
 
     // Complexity checks
     if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++;
@@ -138,16 +179,43 @@ const authService = {
     }
 
     return {
-      valid: password.length >= 8,
+      valid: password.length >= 15,
       score,
       feedback,
     };
   },
 
   /**
+   * Verify email with 6-digit code
+   * Called after user clicks verification link or enters code manually
+   */
+  async verifyEmail(email: string, code: string): Promise<AuthResponse> {
+    try {
+      const apiClient = await getApiClient();
+      const response = await apiClient.post("/auth/verify-email", {
+        email,
+        code,
+      });
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.status === 400) {
+        const data = error.response.data as ApiResponse;
+        throw new Error(data.message || "Invalid verification code");
+      }
+
+      if (error.response?.status === 404) {
+        throw new Error("User not found");
+      }
+
+      throw new Error(error.message || "Verification failed");
+    }
+  },
+
+  /**
    * Refresh JWT token (token expires in 4 hours)
    */
   async refreshToken(): Promise<AuthResponse> {
+    const apiClient = await getApiClient();
     const response = await apiClient.post("/auth/refresh");
     return response.data;
   },
@@ -157,6 +225,7 @@ const authService = {
    */
   async logout(): Promise<void> {
     try {
+      const apiClient = await getApiClient();
       // Call logout endpoint (will be used for token blacklisting)
       await apiClient.post("/auth/logout");
     } catch (error) {
@@ -187,7 +256,17 @@ const authService = {
 
   getUser(): User | null {
     const userStr = localStorage.getItem("user");
-    return userStr ? JSON.parse(userStr) : null;
+    if (!userStr || userStr === "undefined" || userStr === "null") {
+      return null;
+    }
+    try {
+      return JSON.parse(userStr);
+    } catch (error) {
+      console.error("Failed to parse user data from localStorage:", error);
+      // Clear corrupted data
+      localStorage.removeItem("user");
+      return null;
+    }
   },
 
   isLoggedIn(): boolean {
@@ -205,12 +284,61 @@ const authService = {
   },
 
   saveUserData(data: AuthResponse): void {
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    // Enhanced validation with detailed logging
+    if (!data) {
+      console.error(
+        "Invalid auth data provided to saveUserData: data is null/undefined"
+      );
+      return;
+    }
 
-    // Store token expiration time (4 hours from now)
-    const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-    localStorage.setItem("tokenExpiresAt", expiresAt.toString());
+    if (typeof data !== "object") {
+      console.error(
+        "Invalid auth data provided to saveUserData: data is not an object",
+        typeof data,
+        data
+      );
+      return;
+    }
+
+    if (!data.token || typeof data.token !== "string") {
+      console.error(
+        "Invalid auth data provided to saveUserData: missing or invalid token",
+        data
+      );
+      return;
+    }
+
+    if (!data.user || typeof data.user !== "object") {
+      console.error(
+        "Invalid auth data provided to saveUserData: missing or invalid user object",
+        data
+      );
+      return;
+    }
+
+    try {
+      // Validate that we can serialize the user data
+      const userJson = JSON.stringify(data.user);
+      JSON.parse(userJson); // Test that it's valid JSON
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", userJson);
+
+      // Store token expiration time (4 hours from now)
+      const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+      localStorage.setItem("tokenExpiresAt", expiresAt.toString());
+    } catch (error) {
+      console.error(
+        "Failed to save user data - JSON serialization error:",
+        error,
+        data
+      );
+      // Clear any potentially corrupted data
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      localStorage.removeItem("tokenExpiresAt");
+    }
   },
 
   /**

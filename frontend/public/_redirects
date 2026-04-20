@@ -1,0 +1,18 @@
+# Block direct probing of common VCS/hidden repository paths
+/.git 404
+/.git/* 404
+/.hg 404
+/.hg/* 404
+/.bzr 404
+/.bzr/* 404
+/._darcs 404
+/._darcs/* 404
+/BitKeeper 404
+/BitKeeper/* 404
+
+# Ensure these files resolve directly
+/robots.txt /robots.txt 200
+/sitemap.xml /sitemap.xml 200
+
+# SPA fallback for app routes
+/* /index.html 200

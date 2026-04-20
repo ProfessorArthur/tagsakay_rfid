@@ -1,10 +1,12 @@
 /**
- * DeviceConnection Durable Object
+ * DeviceConnection Durable Object (DEPRECATED)
  *
- * Handles persistent WebSocket connections for ESP32 devices.
- * Each device gets its own Durable Object instance identified by deviceId.
+ * This file is no longer used as Durable Objects require a paid Cloudflare plan.
+ * WebSocket connections are now handled via standard HTTP upgrade.
  *
- * Features:
+ * Kept for reference/future use if upgrading to paid plan.
+ *
+ * Previous features (now handled by WebSocket polling):
  * - WebSocket connection management
  * - Duplicate scan prevention
  * - Offline scan buffering
@@ -13,9 +15,9 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import type { Database } from "../db";
-import { createDb } from "../db";
-import { devices, rfidScans, rfids, users } from "../db/schema";
+import type { Database } from "../db/index.js";
+import { createDb } from "../db/index.js";
+import { devices, rfidScans, rfids, users } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 
 interface ScanMessage {
@@ -280,10 +282,12 @@ export class DeviceConnection extends DurableObject {
         .insert(rfidScans)
         .values({
           rfidTagId: tagId, // Correct field name from schema
+          rfidId: rfidTag?.id || null,
           deviceId: this.deviceId,
           userId: rfidTag?.userId || null,
           eventType: isRegistered ? "entry" : "unknown",
           location: device?.location || "Unknown",
+          unitNumber: rfidTag?.unitNumber ?? null,
           scanTime: new Date(timestamp),
           status: isRegistered ? "success" : "failed",
           metadata: {

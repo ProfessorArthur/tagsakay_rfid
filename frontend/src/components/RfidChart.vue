@@ -1,36 +1,43 @@
 <template>
   <div class="chart-container">
     <div v-if="loading" class="flex justify-center my-12">
-      <span class="loading loading-spinner loading-lg"></span>
+      <span
+        class="loading loading-spinner loading-lg"
+        aria-hidden="true"
+      ></span>
     </div>
-    <Bar v-else :data="chartData" :options="chartOptions" />
+    <Suspense>
+      <template #default>
+        <Bar v-if="!loading" :data="chartData" :options="chartOptions" />
+      </template>
+      <template #fallback>
+        <div class="flex justify-center my-12">
+          <span
+            class="loading loading-spinner loading-lg"
+            aria-hidden="true"
+          ></span>
+        </div>
+      </template>
+    </Suspense>
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, computed, onMounted } from "vue";
-import { Bar } from "vue-chartjs";
 import {
-  Chart as ChartJS,
-  Title,
-  Tooltip,
-  Legend,
-  BarElement,
-  CategoryScale,
-  LinearScale,
-  type ChartData,
-  type ChartOptions,
-} from "chart.js";
+  defineComponent,
+  ref,
+  computed,
+  onMounted,
+  defineAsyncComponent,
+} from "vue";
+import { ChartComponents } from "../utils/chartConfig";
 import rfidStatsService from "../services/rfidStats";
 import type { ScanStats } from "../services/rfidStats";
+import type { ChartData, ChartOptions } from "chart.js";
 
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend
+// Lazy-load Bar component without making module setup async
+const Bar = defineAsyncComponent(() =>
+  ChartComponents.Bar().then((m: any) => m?.default ?? m)
 );
 
 export default defineComponent({
@@ -47,6 +54,40 @@ export default defineComponent({
     const loading = ref(true);
     const statsData = ref<ScanStats[]>([]);
 
+    const createSampleRow = (label: string, rawKey: string, count: number) => {
+      const success = Math.max(0, Math.round(count * 0.82));
+      const failed = Math.max(0, Math.round(count * 0.12));
+      const unauthorized = Math.max(0, count - success - failed);
+      return {
+        label,
+        rawKey,
+        count,
+        total: count,
+        success,
+        failed,
+        unauthorized,
+      } satisfies ScanStats;
+    };
+
+    const sampleWeeklyData = [
+      createSampleRow("Monday", "mon", 42),
+      createSampleRow("Tuesday", "tue", 38),
+      createSampleRow("Wednesday", "wed", 55),
+      createSampleRow("Thursday", "thu", 71),
+      createSampleRow("Friday", "fri", 89),
+      createSampleRow("Saturday", "sat", 52),
+      createSampleRow("Sunday", "sun", 33),
+    ];
+
+    const sampleMonthlyData = [
+      createSampleRow("April", "2025-04", 220),
+      createSampleRow("May", "2025-05", 380),
+      createSampleRow("June", "2025-06", 450),
+      createSampleRow("July", "2025-07", 410),
+      createSampleRow("August", "2025-08", 390),
+      createSampleRow("September", "2025-09", 480),
+    ];
+
     onMounted(async () => {
       try {
         if (props.period === "weekly") {
@@ -57,51 +98,19 @@ export default defineComponent({
 
         // If API fails or returns empty data, use sample data
         if (!statsData.value || statsData.value.length === 0) {
-          if (props.period === "weekly") {
-            statsData.value = [
-              { label: "Monday", count: 42 },
-              { label: "Tuesday", count: 38 },
-              { label: "Wednesday", count: 55 },
-              { label: "Thursday", count: 71 },
-              { label: "Friday", count: 89 },
-              { label: "Saturday", count: 52 },
-              { label: "Sunday", count: 33 },
-            ];
-          } else {
-            statsData.value = [
-              { label: "April", count: 220 },
-              { label: "May", count: 380 },
-              { label: "June", count: 450 },
-              { label: "July", count: 410 },
-              { label: "August", count: 390 },
-              { label: "September", count: 480 },
-            ];
-          }
+          statsData.value =
+            props.period === "weekly"
+              ? [...sampleWeeklyData]
+              : [...sampleMonthlyData];
         }
       } catch (error) {
         console.error("Error fetching RFID stats:", error);
 
         // Use sample data if API fails
-        if (props.period === "weekly") {
-          statsData.value = [
-            { label: "Monday", count: 42 },
-            { label: "Tuesday", count: 38 },
-            { label: "Wednesday", count: 55 },
-            { label: "Thursday", count: 71 },
-            { label: "Friday", count: 89 },
-            { label: "Saturday", count: 52 },
-            { label: "Sunday", count: 33 },
-          ];
-        } else {
-          statsData.value = [
-            { label: "April", count: 220 },
-            { label: "May", count: 380 },
-            { label: "June", count: 450 },
-            { label: "July", count: 410 },
-            { label: "August", count: 390 },
-            { label: "September", count: 480 },
-          ];
-        }
+        statsData.value =
+          props.period === "weekly"
+            ? [...sampleWeeklyData]
+            : [...sampleMonthlyData];
       } finally {
         loading.value = false;
       }

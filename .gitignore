@@ -58,8 +58,3 @@ wrangler.toml.backup
 # Temporary development files with real credentials
 *_PRODUCTION.ino
 *_CREDENTIALS.*
-
-# Public release hygiene
-backend-workers/token.txt
-token.txt
-TagSakay_Revision.pdf

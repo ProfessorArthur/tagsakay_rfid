@@ -2,35 +2,48 @@ name = "tagsakay-api"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
+[[analytics_engine_datasets]]
+binding = "OBSERVABILITY_DATASET"
+dataset = "tagsakay_observability"
+
 # Environment variables (add these via Wrangler CLI or dashboard)
 # wrangler secret put DATABASE_URL
 # wrangler secret put JWT_SECRET
 
 [env.production]
 name = "tagsakay-api-production"
+# Custom domain is now live (configured Nov 5, 2025)
 routes = [
   { pattern = "api.tagsakay.com/*", custom_domain = true }
 ]
 
+# Note: Durable Objects require paid plan. WebSocket logic will use alternative approach.
+# [[env.production.durable_objects.bindings]]
+# name = "DEVICE_CONNECTIONS"
+# class_name = "DeviceConnection"
+# script_name = "tagsakay-api-production"
+
+# [[env.production.migrations]]
+# tag = "v1"
+# new_classes = ["DeviceConnection"]
+
 [env.development]
 name = "tagsakay-api-development"
 # Development uses .dev.vars and runs locally on port 8787
+# WebSocket connections handled via standard HTTP upgrade
+
+[dev]
+ip = "0.0.0.0"
+port = 8787
+local_protocol = "http"
 
 [env.staging]
 name = "tagsakay-api-staging"
+# Staging environment configuration
 
-# Durable Objects for WebSocket connections
-[[durable_objects.bindings]]
-name = "DEVICE_CONNECTIONS"
-class_name = "DeviceConnection"
-script_name = "tagsakay-api"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["DeviceConnection"]
-
-# Bindings (if using D1, KV, R2, etc. - optional)
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "tagsakay"
-# database_id = "xxx"
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true

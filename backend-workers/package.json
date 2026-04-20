@@ -7,12 +7,17 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "start": "wrangler dev",
+    "dev:lan": "wrangler dev",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx ./src/db/migrate.ts",
+    "migrate": "tsx ./src/db/migrate.ts",
+    "db:sync-migrations": "tsx ./src/db/syncMigrations.ts",
     "push": "drizzle-kit push",
     "studio": "drizzle-kit studio",
     "seed": "tsx seed.ts",
-    "db:setup": "npm run migrate && npm run seed"
+    "db:setup": "npm run migrate && npm run seed",
+    "db:clean": "tsx clean-db.ts",
+    "test:optimizations": "node tests/optimizations-test.js",
+    "test:live:no-device": "node tests/live-no-device-test.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
@@ -20,6 +25,7 @@
     "drizzle-orm": "^0.44.7",
     "hono": "^4.10.4",
     "jose": "^6.1.0",
+    "resend": "^6.4.1",
     "ws": "^8.18.3"
   },
   "devDependencies": {

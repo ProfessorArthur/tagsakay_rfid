@@ -2,16 +2,21 @@ import api from "./api";
 import type { ApiResponse } from "./api";
 
 export interface Device {
-  id: number;
+  id: string;
+  recordId?: string;
   deviceId: string;
   macAddress: string;
   name: string;
   location: string;
   isActive: boolean;
   registrationMode: boolean;
-  lastSeen?: string;
-  createdAt: string;
-  updatedAt: string;
+  scanMode: boolean;
+  pendingRegistrationTagId: string;
+  status?: "online" | "offline";
+  lastSeen?: string | null;
+  lastSeenAgoSeconds?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface RegisterDeviceRequest {
@@ -20,11 +25,23 @@ export interface RegisterDeviceRequest {
   location: string;
 }
 
+export interface RegisterDeviceResponse {
+  device: Device;
+  apiKey: string;
+}
+
 export interface UpdateDeviceStatusRequest {
   isActive?: boolean;
   registrationMode?: boolean;
   pendingRegistrationTagId?: string;
   scanMode?: boolean;
+}
+
+export interface DeleteDeviceResult {
+  removed: boolean;
+  archived: boolean;
+  linkedScanCount: number;
+  device?: Partial<Device>;
 }
 
 /**
@@ -91,13 +108,102 @@ const validateLocation = (
   return { valid: true };
 };
 
+const DEVICE_STALE_THRESHOLD_MS = 2 * 60 * 1000;
+
+const toIsoString = (
+  value: string | Date | null | undefined
+): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
+};
+
+const secondsFromNow = (isoString: string | null): number | null => {
+  if (!isoString) {
+    return null;
+  }
+
+  const timestamp = new Date(isoString).getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return Math.floor((Date.now() - timestamp) / 1000);
+};
+
+const deriveStatus = (raw: any): "online" | "offline" => {
+  const isActive = Boolean(raw?.isActive);
+  if (!isActive) {
+    return "offline";
+  }
+
+  const lastSeenIso = toIsoString(raw?.lastSeen);
+  if (!lastSeenIso) {
+    return "offline";
+  }
+
+  return Date.now() - new Date(lastSeenIso).getTime() <=
+    DEVICE_STALE_THRESHOLD_MS
+    ? "online"
+    : "offline";
+};
+
+const normalizeDevice = (raw: any): Device => {
+  const deviceId = raw?.deviceId ?? raw?.id;
+  if (!deviceId) {
+    throw new Error("Device payload missing deviceId");
+  }
+
+  const lastSeen = toIsoString(raw?.lastSeen);
+  const status =
+    typeof raw?.status === "string" ? raw.status : deriveStatus(raw);
+
+  return {
+    id: deviceId,
+    recordId: raw?.id && raw.id !== deviceId ? raw.id : undefined,
+    deviceId,
+    macAddress: raw?.macAddress ?? "",
+    name: raw?.name ?? deviceId,
+    location: raw?.location ?? "",
+    isActive: Boolean(raw?.isActive),
+    registrationMode: Boolean(raw?.registrationMode),
+    scanMode: Boolean(raw?.scanMode),
+    pendingRegistrationTagId: raw?.pendingRegistrationTagId ?? "",
+    status,
+    lastSeen,
+    lastSeenAgoSeconds:
+      typeof raw?.lastSeenAgoSeconds === "number"
+        ? raw.lastSeenAgoSeconds
+        : secondsFromNow(lastSeen),
+    createdAt: toIsoString(raw?.createdAt),
+    updatedAt: toIsoString(raw?.updatedAt),
+  };
+};
+
+// Client-side device cache
+let _devicesCache: Device[] | null = null;
+let _devicesCacheAt = 0;
+const DEVICE_CACHE_TTL_MS = 1000 * 60 * 3; // 3 minutes
+
+const invalidateDevicesCache = () => {
+  _devicesCache = null;
+  _devicesCacheAt = 0;
+};
+
 const deviceService = {
   /**
    * Register a new device with its MAC address
    */
   registerDevice: async (
     deviceData: RegisterDeviceRequest
-  ): Promise<Device> => {
+  ): Promise<RegisterDeviceResponse> => {
     // Client-side validation
     const macValidation = validateMacAddress(deviceData.macAddress);
     if (!macValidation.valid) {
@@ -116,7 +222,9 @@ const deviceService = {
 
     try {
       const response = await api.post("/devices/register", deviceData);
-      return response.data;
+      // Invalidate devices cache when a new device is created
+      invalidateDevicesCache();
+      return response.data as RegisterDeviceResponse;
     } catch (error: any) {
       if (error.response?.status === 400) {
         const apiResponse = error.response.data as ApiResponse;
@@ -139,7 +247,25 @@ const deviceService = {
   getActiveDevices: async (): Promise<Device[]> => {
     try {
       const response = await api.get("/devices/active");
-      return response.data || [];
+      const devices = Array.isArray(response.data?.devices)
+        ? response.data.devices.map(normalizeDevice)
+        : [];
+
+      const staleDevices = Array.isArray(response.data?.stale)
+        ? response.data.stale.map(normalizeDevice)
+        : [];
+
+      if (staleDevices.length > 0) {
+        console.debug(
+          "[device-service] Stale devices awaiting heartbeat:",
+          staleDevices.map((device: Device) => ({
+            deviceId: device.deviceId,
+            lastSeen: device.lastSeen,
+          }))
+        );
+      }
+
+      return devices.filter((device: Device) => device.status === "online");
     } catch (error: any) {
       console.error("Failed to fetch active devices:", error);
       return [];
@@ -149,10 +275,23 @@ const deviceService = {
   /**
    * Get all registered devices
    */
-  getAllDevices: async (): Promise<Device[]> => {
+  getAllDevices: async (forceRefresh = false): Promise<Device[]> => {
+    const now = Date.now();
+    if (
+      !forceRefresh &&
+      _devicesCache &&
+      now - _devicesCacheAt < DEVICE_CACHE_TTL_MS
+    ) {
+      return _devicesCache;
+    }
     try {
       const response = await api.get("/devices");
-      return response.data || [];
+      const devices = Array.isArray(response.data?.devices)
+        ? response.data.devices.map(normalizeDevice)
+        : [];
+      _devicesCache = devices;
+      _devicesCacheAt = Date.now();
+      return devices;
     } catch (error: any) {
       console.error("Failed to fetch all devices:", error);
       return [];
@@ -163,12 +302,18 @@ const deviceService = {
    * Update device status (enable/disable)
    */
   updateDeviceStatus: async (
-    id: number,
+    deviceId: string,
     statusData: UpdateDeviceStatusRequest
-  ): Promise<Device> => {
+  ): Promise<Partial<Device>> => {
     try {
-      const response = await api.put(`/devices/${id}/status`, statusData);
-      return response.data;
+      const response = await api.put(`/devices/${deviceId}`, statusData);
+      const device = response.data?.device as Partial<Device> | undefined;
+      if (!device) {
+        throw new Error("Device payload missing from update response");
+      }
+      // Invalidate devices cache to reflect the update
+      invalidateDevicesCache();
+      return device;
     } catch (error: any) {
       throw new Error(error.message || "Failed to update device status");
     }
@@ -177,11 +322,39 @@ const deviceService = {
   /**
    * Delete a device
    */
-  deleteDevice: async (id: number): Promise<void> => {
+  deleteDevice: async (deviceId: string): Promise<DeleteDeviceResult> => {
     try {
-      await api.delete(`/devices/${id}`);
+      const response = await api.delete(`/devices/${deviceId}`);
+      // Clear cache to reflect deletion
+      invalidateDevicesCache();
+
+      const payload = response.data ?? {};
+      return {
+        removed: Boolean(payload.removed),
+        archived: Boolean(payload.archived),
+        linkedScanCount: Number(payload.linkedScanCount ?? 0),
+        device: payload.device,
+      };
     } catch (error: any) {
       throw new Error(error.message || "Failed to delete device");
+    }
+  },
+
+  /**
+   * Unarchive a previously archived device
+   */
+  unarchiveDevice: async (deviceId: string): Promise<Device> => {
+    try {
+      const response = await api.post(`/devices/${deviceId}/unarchive`, {});
+      const rawDevice = response.data?.device;
+      if (!rawDevice) {
+        throw new Error("Device payload missing from unarchive response");
+      }
+
+      invalidateDevicesCache();
+      return normalizeDevice(rawDevice);
+    } catch (error: any) {
+      throw new Error(error.message || "Failed to unarchive device");
     }
   },
 
@@ -191,14 +364,19 @@ const deviceService = {
   enableRegistrationMode: async (
     deviceId: string,
     tagId?: string
-  ): Promise<Device> => {
+  ): Promise<Partial<Device>> => {
     try {
-      const response = await api.post(`/devices/status/${deviceId}`, {
+      const response = await api.post(`/devices/${deviceId}/mode`, {
         registrationMode: true,
         pendingRegistrationTagId: tagId || "",
         scanMode: !tagId,
       });
-      return response.data;
+      const device = response.data?.device as Partial<Device> | undefined;
+      if (!device) {
+        throw new Error("Device payload missing from enable response");
+      }
+      invalidateDevicesCache();
+      return device;
     } catch (error: any) {
       throw new Error(error.message || "Failed to enable registration mode");
     }
@@ -207,13 +385,20 @@ const deviceService = {
   /**
    * Disable registration mode for a device
    */
-  disableRegistrationMode: async (deviceId: string): Promise<Device> => {
+  disableRegistrationMode: async (
+    deviceId: string
+  ): Promise<Partial<Device>> => {
     try {
-      const response = await api.post(`/devices/status/${deviceId}`, {
+      const response = await api.post(`/devices/${deviceId}/mode`, {
         registrationMode: false,
         pendingRegistrationTagId: "",
       });
-      return response.data;
+      const device = response.data?.device as Partial<Device> | undefined;
+      if (!device) {
+        throw new Error("Device payload missing from disable response");
+      }
+      invalidateDevicesCache();
+      return device;
     } catch (error: any) {
       throw new Error(error.message || "Failed to disable registration mode");
     }
@@ -230,14 +415,19 @@ const deviceService = {
     deviceId: string;
     enabled: boolean;
     tagId?: string;
-  }): Promise<Device> => {
+  }): Promise<Partial<Device>> => {
     try {
-      const response = await api.post(`/devices/status/${deviceId}`, {
+      const response = await api.post(`/devices/${deviceId}/mode`, {
         registrationMode: enabled,
         pendingRegistrationTagId: tagId || "",
         scanMode: !tagId && enabled,
       });
-      return response.data;
+      const device = response.data?.device as Partial<Device> | undefined;
+      if (!device) {
+        throw new Error("Device payload missing from mode response");
+      }
+      invalidateDevicesCache();
+      return device;
     } catch (error: any) {
       throw new Error(error.message || "Failed to set registration mode");
     }
@@ -247,6 +437,8 @@ const deviceService = {
   validateMacAddress,
   validateDeviceName,
   validateLocation,
+  // expose invalidation helper
+  invalidateDevicesCache,
 };
 
 export default deviceService;

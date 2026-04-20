@@ -25,8 +25,25 @@ export interface User {
   role: "driver" | "admin" | "superadmin";
   isActive: boolean;
   rfidTag?: string;
+  rfids?: Array<{
+    id: string;
+    tagId: string;
+    isActive: boolean;
+    lastScanned?: string | null;
+  }>;
+  rfidTags?: Array<{
+    id: string;
+    tagId: string;
+    isActive: boolean;
+    lastScanned?: string | null;
+  }>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GetUsersOptions {
+  forceRefresh?: boolean;
+  includeRfids?: boolean;
 }
 
 /**
@@ -66,11 +83,57 @@ const validateName = (name: string): { valid: boolean; error?: string } => {
   return { valid: true };
 };
 
-// Get all users
-const getUsers = async (): Promise<User[]> => {
+// Client-side cache for users (separate buckets by includeRfids option)
+const _usersCache = new Map<string, User[]>();
+const _usersCacheAt = new Map<string, number>();
+const USER_CACHE_TTL_MS = 1000 * 60 * 3; // 3 minutes default
+
+// Get all users with optional cache
+const getUsers = async (
+  optionsOrForceRefresh: GetUsersOptions | boolean = {}
+): Promise<User[]> => {
+  const options: GetUsersOptions =
+    typeof optionsOrForceRefresh === "boolean"
+      ? { forceRefresh: optionsOrForceRefresh }
+      : optionsOrForceRefresh;
+
+  const includeRfids = options.includeRfids ?? true;
+  const forceRefresh = options.forceRefresh ?? false;
+  const cacheKey = includeRfids ? "with-rfids" : "without-rfids";
+
+  // Return cached users if still fresh and not forced
+  const now = Date.now();
+  const cachedUsers = _usersCache.get(cacheKey);
+  const cachedAt = _usersCacheAt.get(cacheKey) ?? 0;
+  if (
+    !forceRefresh &&
+    cachedUsers &&
+    now - cachedAt < USER_CACHE_TTL_MS
+  ) {
+    return cachedUsers;
+  }
+
   try {
-    const response = await apiClient.get("/users");
-    return response.data;
+    const response = await apiClient.get("/users", {
+      params: {
+        includeRfids,
+      },
+    });
+    const rawUsers = Array.isArray(response.data)
+      ? response.data
+      : Array.isArray(response?.data?.data)
+      ? response.data.data
+      : [];
+
+    const normalized = rawUsers.map((user: User) => ({
+      ...user,
+      rfids: user.rfids ?? user.rfidTags ?? [],
+      rfidTags: user.rfidTags ?? user.rfids ?? [],
+    }));
+    // Save to cache
+    _usersCache.set(cacheKey, normalized);
+    _usersCacheAt.set(cacheKey, Date.now());
+    return normalized;
   } catch (error: any) {
     console.error("Failed to fetch users:", error);
     throw new Error(error.message || "Failed to fetch users");
@@ -81,11 +144,22 @@ const getUsers = async (): Promise<User[]> => {
 const getUser = async (id: number): Promise<User> => {
   try {
     const response = await apiClient.get(`/users/${id}`);
-    return response.data;
+    const user = response.data as User;
+    return {
+      ...user,
+      rfids: user.rfids ?? user.rfidTags ?? [],
+      rfidTags: user.rfidTags ?? user.rfids ?? [],
+    };
   } catch (error: any) {
     console.error(`Failed to fetch user ${id}:`, error);
     throw new Error(error.message || "Failed to fetch user");
   }
+};
+
+// Force-invalidate user cache
+const invalidateUsersCache = () => {
+  _usersCache.clear();
+  _usersCacheAt.clear();
 };
 
 // Create a new user
@@ -107,6 +181,8 @@ const createUser = async (userData: UserCredentials): Promise<User> => {
 
   try {
     const response = await apiClient.post("/users", userData);
+    // Invalidate cache since new user created
+    invalidateUsersCache();
     return response.data;
   } catch (error: any) {
     // Handle validation errors from backend
@@ -142,6 +218,8 @@ const updateUser = async (
 
   try {
     const response = await apiClient.put(`/users/${id}`, userData);
+    // Invalidate cache since user updated
+    invalidateUsersCache();
     return response.data;
   } catch (error: any) {
     if (error.response?.status === 400) {
@@ -164,12 +242,20 @@ const deleteUser = async (id: number): Promise<void> => {
   }
 };
 
+// Ensure cache is invalidated on delete
+const deleteUserAndInvalidate = async (id: number) => {
+  await deleteUser(id);
+  invalidateUsersCache();
+};
+
 export default {
   getUsers,
   getUser,
   createUser,
   updateUser,
-  deleteUser,
+  deleteUser: deleteUserAndInvalidate,
+  // Expose cache invalidation for consumers who need a forced refresh
+  invalidateUsersCache,
   validateEmail,
   validateName,
 };

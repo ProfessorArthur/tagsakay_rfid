@@ -192,8 +192,8 @@ Global variables use 50236 bytes (15%) of dynamic memory, leaving 277444 bytes f
 
 Unlikely, but if needed:
 
-1. Disable WebSocket (use HTTP only) → Save ~50 KB
-2. Simplify TFT display code → Save ~30 KB
-3. Remove unused features (keypad menu) → Save ~20 KB
+1. Trim unused TFT widgets or fonts → Save ~30 KB
+2. Reduce ArduinoJson document sizes → Save ~10 KB
+3. Remove optional keypad menu features → Save ~20 KB
 
 See `OPTIMIZATION_GUIDE.md` for full details.

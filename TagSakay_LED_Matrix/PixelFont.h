@@ -12,5 +12,6 @@ void drawPixelDigit(int x, int y, int digit, uint16_t color);
 void drawPixelNumber(int x, int y, int number, uint16_t color);
 void drawLargePixelNumber(int x, int y, int number, uint16_t color);
 void drawPixelPipe(int x, int y, uint16_t color);
+void drawPixelNumberString(int x, int y, const String& value, int maxDigits, uint16_t color);
 
 #endif // PIXEL_FONT_H

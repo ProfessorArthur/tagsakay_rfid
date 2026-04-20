@@ -1,13 +1,38 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + Vue + TS</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>TagSakay | RFID Operations Console</title>
+
+  <meta name="description"
+    content="TagSakay helps transport cooperatives manage RFID-enabled tricycle queues with secure device onboarding, live dashboards, and role-based administration." />
+  <meta name="keywords" content="TagSakay, RFID, transport, queue management, tricycle" />
+  <meta name="author" content="TagSakay Team" />
+  <meta name="theme-color" content="#0f172a" />
+
+  <!-- Content Security Policy - Development fallback -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com https://static.cloudflareinsights.com https://cloudflareinsights.com https://cloudflare.com data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.tagsakay.com wss://api.tagsakay.com http://localhost:8787 https://cloudflareinsights.com https://static.cloudflareinsights.com https://cloudflare.com; frame-src 'self' blob:; base-uri 'self'; form-action 'self';" />
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="TagSakay | RFID Operations Console" />
+  <meta property="og:description"
+    content="Streamline device management, registration mode, and live RFID scans with TagSakay's secure Cloudflare Workers backend and Vue.js admin suite." />
+  <meta property="og:url" content="https://tagsakay.com" />
+  <meta property="og:image" content="https://tagsakay.com/social-preview.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/tagsakay_logo.svg" />
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
 </html>

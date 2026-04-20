@@ -3,7 +3,7 @@
 
 void animateTransition() {
   for (int i = 0; i < 2; i++) {
-    dma_display->fillScreen(COLOR_BLACK);
+    virtualDisp->fillScreen(COLOR_BLACK);
     dma_display->flipDMABuffer();
     delay(50);
   }

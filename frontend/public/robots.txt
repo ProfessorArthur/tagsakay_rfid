@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /profile
+Disallow: /settings
+Disallow: /rfid
+Disallow: /rfid/scans
+Disallow: /users
+Disallow: /apikeys
+Disallow: /devices
+Disallow: /devices/register
+Disallow: /onboarding
+Disallow: /verify-email
+
+Sitemap: https://tagsakay.com/sitemap.xml

@@ -19,10 +19,15 @@
 #define PN532_MOSI 13
 #define PN532_SS 27
 
-// UART Communication to LED Matrix ESP32
+// UART Communication to LED Matrix ESP32 (one-way transmit)
 #define UART_TX 17
-#define UART_RX 16
+#define UART_RX -1  // RX intentionally detached; frees GPIO16 for other peripherals
 #define UART_BAUD 115200
+
+// Active buzzer configuration (uses freed GPIO16)
+#define BUZZER_PIN 16
+#define BUZZER_ACTIVE_LEVEL HIGH
+#define BUZZER_IDLE_LEVEL LOW
 
 // 4x4 Keypad Matrix Pins
 #define KEYPAD_ROWS 4
@@ -43,75 +48,78 @@
 // Display Layout Constants
 // =======================
 
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
+#define SCREEN_WIDTH 480
+#define SCREEN_HEIGHT 320
 
-#define HEADER_HEIGHT 35
-#define STATUS_SECTION_Y 40
-#define STATUS_SECTION_HEIGHT 70
-#define SCAN_SECTION_Y 115
-#define SCAN_SECTION_HEIGHT 80
-#define FOOTER_Y 200
-#define FOOTER_HEIGHT 40
+#define HEADER_HEIGHT 48
+#define STATUS_SECTION_Y 56
+#define STATUS_SECTION_HEIGHT 104
+#define SCAN_SECTION_Y 170
+#define SCAN_SECTION_HEIGHT 120
+#define FOOTER_Y 290
+#define FOOTER_HEIGHT 30
 
-#define LEFT_MARGIN 5
-#define RIGHT_MARGIN 315
-#define CENTER_X 160
+#define LEFT_MARGIN 12
+#define RIGHT_MARGIN (SCREEN_WIDTH - 12)
+#define CENTER_X (SCREEN_WIDTH / 2)
 
 // =======================
 // Timing Constants
 // =======================
 
-#define HEARTBEAT_INTERVAL 30000  // 30 seconds
+#define HEARTBEAT_INTERVAL 60000  // 60 seconds
+#define COMMAND_POLL_INTERVAL 5000 // 5 seconds - poll server commands
 #define REGISTRATION_MODE_TIMEOUT 120000  // 2 minutes
 #define KEY_INPUT_TIMEOUT 5000  // 5 seconds
 #define TEST_MODE_TIMEOUT 10000  // 10 seconds
 #define RFID_DEBOUNCE_MS 1500  // 1.5 seconds
 #define KEYPAD_DEBOUNCE_MS 300  // 300ms
-#define HEARTBEAT_INTERVAL_MS 60000  // 1 minute
+// Legacy alias (kept for backward compatibility). Use HEARTBEAT_INTERVAL.
+#define HEARTBEAT_INTERVAL_MS HEARTBEAT_INTERVAL
 #define MENU_REMINDER_INTERVAL 30000  // 30 seconds
 
 // =======================
 // API Configuration
 // =======================
 
-// PRODUCTION Configuration (uses custom domain api.tagsakay.com)
-#ifndef WS_HOST
-  #define WS_HOST "api.tagsakay.com"  // Production API domain
-#endif
+// ⚠️  CHOOSE ONE: Comment/Uncomment the section you need
+// LOCAL: For development with computer running "npm run dev"
+// PRODUCTION: For live deployment to api.tagsakay.com
 
-#ifndef WS_PORT
-  #define WS_PORT 443  // HTTPS/WSS standard port
-#endif
+// ============================================================================
+// 🔧 LOCAL DEVELOPMENT CONFIGURATION (UNCOMMENT THIS FOR LOCAL DEMO)
+// ============================================================================
+// Instructions:
+// 1. Find your computer IP: Run "ipconfig" in command prompt
+// 2. Replace "192.168.1.100" below with your actual IP (e.g., 192.168.1.50)
+// 3. Make sure backend is running: cd backend-workers && npm run dev
+// 4. Uncomment all lines in this section (delete //)
+// 5. Comment out PRODUCTION section below
+//
+#define API_BASE_URL "http://192.168.1.100:8787"  // ← CHANGE TO YOUR IP + PORT
+#define API_DEFAULT_KEY ""                   // No key needed for local dev
+//
+// ============================================================================
 
-#ifndef WS_PATH
-  #define WS_PATH "/ws/device"  // WebSocket endpoint
-#endif
+// ============================================================================
+// 🚀 PRODUCTION CONFIGURATION (UNCOMMENT THIS FOR DEPLOYMENT)
+// ============================================================================
+// Instructions:
+// 1. Obtain API key from admin panel: https://tagsakay-frontend.pages.dev
+// 2. Uncomment all lines in this section (delete //)
+// 3. Comment out LOCAL section above
+// 4. Set API_DEFAULT_KEY to your actual device API key
+// 5. Flash to ESP32 for production deployment
+//
+// #define API_BASE_URL "https://api.tagsakay.com"  // Production HTTP API
+// #define API_DEFAULT_KEY ""                  // Set your device API key here
+//
+// ============================================================================
 
-#define WS_RECONNECT_INTERVAL 5000   // Reconnect every 5 seconds if disconnected
-#define WS_PING_INTERVAL 30000       // Send heartbeat every 30 seconds
-#define WS_ENABLED true              // Enable WebSocket (set false to use HTTP only)
-#define USE_SECURE_WS true           // Production uses HTTPS/WSS (secure WebSocket)
-
-// HTTP endpoint (fallback when WebSocket unavailable)
-#ifndef API_BASE_URL
-  #define API_BASE_URL "https://api.tagsakay.com"  // Production API URL
-#endif
-
-#ifndef API_DEFAULT_KEY
-  #define API_DEFAULT_KEY ""  // Set your default API key here (or configure via Serial)
-#endif
-
+// Common API configuration (both local & production)
 #define API_TIMEOUT_MS 5000
 #define API_RETRY_ATTEMPTS 3
 #define MAX_CONSECUTIVE_FAILURES 5
-
-// DEVELOPMENT Configuration (uncomment for local testing)
-// Comment out production config above and uncomment these lines:
-// #define WS_HOST "192.168.1.100"  // Replace with your local dev machine IP
-// #define WS_PORT 8787              // Local Cloudflare Workers dev port
-// #define USE_SECURE_WS false       // Local uses HTTP/WS (non-secure)
-// #define API_BASE_URL "http://192.168.1.100:8787"  // Local dev URL
 
 // =======================
 // Network Configuration
@@ -151,6 +159,17 @@
 #define DEVICE_NAME "TagSakay Scanner"
 #define DEVICE_VERSION "2.0"
 #define FIRMWARE_VERSION "2.0.0"
+
+// Production Device API Key Setup:
+// 1. Login to admin panel at: https://tagsakay-frontend.pages.dev
+// 2. Navigate to: Settings → API Keys Management
+// 3. Click: "Create New API Key"
+// 4. Provide:
+//    - Name: "Gate Scanner #1" (or similar)
+//    - Device ID: (auto-filled with MAC address when device registers)
+//    - Permissions: ["scan", "register"]
+// 5. Copy the API Key (shown only once!)
+// 6. Set below in API_DEFAULT_KEY or configure via Serial menu
 
 // =======================
 // Memory & Performance
@@ -284,6 +303,7 @@ extern unsigned long lastRegistrationCheck;
 extern unsigned long registrationModeStartTime;
 extern unsigned long lastHeartbeat;
 extern unsigned long lastScanTime;
+extern bool offlineMode;
 
 // =======================
 // Utility Macros

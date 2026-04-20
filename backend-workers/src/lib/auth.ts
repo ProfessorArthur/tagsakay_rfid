@@ -3,10 +3,11 @@ import * as jose from "jose";
 // ============================================================================
 // PASSWORD HASHING - OWASP Compliant
 // ============================================================================
-// Uses PBKDF2 with 600,000 iterations (OWASP recommended minimum)
+// Uses PBKDF2; Cloudflare Workers cap iteration count at 100,000
 // Format: algorithm$iterations$salt$hash
 
-const PBKDF2_ITERATIONS = 600000; // OWASP 2023 recommendation
+const PBKDF2_ITERATIONS = 100000; // Cloudflare Web Crypto upper limit
+const MAX_SUPPORTED_ITERATIONS = 100000;
 const SALT_LENGTH = 16; // 16 bytes = 128 bits
 const HASH_LENGTH = 32; // 32 bytes = 256 bits
 
@@ -69,6 +70,14 @@ export async function verifyPassword(
   }
 
   const [, iterations, saltHex, hashHex] = parts;
+  const iterationCount = parseInt(iterations);
+
+  if (iterationCount > MAX_SUPPORTED_ITERATIONS) {
+    console.error(
+      `PBKDF2 iteration count ${iterationCount} exceeds platform limit (${MAX_SUPPORTED_ITERATIONS}).`
+    );
+    return false;
+  }
 
   // Convert hex strings back to Uint8Array
   const salt = new Uint8Array(
@@ -92,7 +101,7 @@ export async function verifyPassword(
     {
       name: "PBKDF2",
       salt: salt,
-      iterations: parseInt(iterations),
+      iterations: iterationCount,
       hash: "SHA-256",
     },
     passwordKey,

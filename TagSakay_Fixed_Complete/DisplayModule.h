@@ -20,6 +20,21 @@ void updateConnectionStatus(const String& wifi, const String& time, const String
 void updateScanSection(const String& tagId, const String& status, const String& userInfo, uint16_t color);
 void updateFooter(const String& msg);
 void showHeartbeat(bool active);
+void updateRfidScanDetails(
+	const String& tagId,
+	const String& unitNumber,
+	const String& userName,
+	bool tagActive,
+	bool userAssigned,
+	bool userActive,
+	const String& statusLabel,
+	uint16_t statusColor,
+	const String& secondaryMessage = ""
+);
+void showRfidDetailError(const String& tagId, const String& message);
+void showQueueMatrix(const String& cascade);
+void showQueuePanel(const String& cascade);
+void hideQueuePanel();
 
 // Legacy compatibility
 void showStatus(const String& msg, uint16_t color = TFT_WHITE, int x = 10, int y = 200, int textSize = 2);
@@ -36,7 +51,10 @@ void blinkError(int times);
 
 // Keypad display
 void displayKeypadPrompt(const String& prompt, const String& buffer);
-void showKeypadMenu();
+void showKeypadMenu(bool refreshFooter = true);
+void hideKeypadMenu();
+void refreshMenuPanel();
+void recordMenuKey(char key);
 
 // Test mode displays
 void showMenu(const char* title, const char* items);
@@ -48,5 +66,9 @@ void showColumnTest(int col, const char* expectedKeys);
 void showPinStates(const byte* rowPins, const byte* colPins, int rowCount, int colCount);
 void showTitle(const char* title);
 void showMessage(const String& title, const String& message);
+void showSystemSummaryPanel();
+void showNetworkInfoPanel();
+void showApiDiagnosticsPanel();
+void showLastScanPanel();
 
 #endif // DISPLAY_MODULE_H

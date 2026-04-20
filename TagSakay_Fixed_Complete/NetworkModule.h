@@ -70,9 +70,11 @@ String getCurrentTimestamp();
 ApiResponse makeApiRequest(const String& endpoint, const String& payload = "", const String& method = "GET");
 void handleRfidScan(String tagId);
 void handleScanResponse(const String& responseData);
-void sendHeartbeat();
+bool sendHeartbeat();
 void sendRfidScan(String tagId);
 void reportDeviceStatus(String reason);
 void checkRegistrationModeFromServer();
+bool updateDeviceMode(bool registrationModeEnabled, bool scanModeEnabled, const String& pendingTagId = "");
+bool syncDeviceProfile();
 
 #endif // NETWORK_MODULE_H
