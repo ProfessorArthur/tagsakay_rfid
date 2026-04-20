@@ -2,6 +2,8 @@
 
 A comprehensive RFID-based tricycle queue management system with ESP32 integration, user management, real-time monitoring capabilities, and OWASP-compliant security.
 
+This repository is the public, tinker-friendly edition of TagSakay. It is intended for learning, experimentation, and community contributions.
+
 ## Project Overview
 
 TagSakay is an RFID-based queue management system designed for tricycle transportation services. The system consists of three main components:
