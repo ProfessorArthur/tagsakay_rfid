@@ -16,31 +16,35 @@ TagSakay is an RFID-based queue management system designed for tricycle transpor
 
 ```
 tagsakay_rfid/
-├── backend-workers/      # Cloudflare Workers API
-│   ├── src/              # Source code
-│   │   ├── controllers/  # Request handlers
-│   │   ├── db/           # Drizzle schema & migrations
-│   │   ├── lib/          # Utilities (auth, validation, logging)
-│   │   ├── middleware/   # Hono middleware (auth, rate limiting, security)
-│   │   └── routes/       # API routes
-│   ├── tests/            # Integration tests
-│   │   ├── rate-limit-test.js
-│   │   ├── password-strength-test.js
-│   │   ├── TEST_RESULTS.md
-│   │   └── MANUAL_TESTING_GUIDE.md
-│   ├── docs/             # API documentation
-│   │   └── legacy/       # Archived legacy backend docs
-│   ├── wrangler.toml     # Cloudflare configuration
-│   └── drizzle.config.ts # Drizzle ORM configuration
-├── frontend/             # Vue.js web application
-│   ├── public/           # Static assets
-│   └── src/              # Source code
-│       ├── components/   # Vue components
-│       ├── router/       # Vue Router configuration
-│       ├── services/     # API service layer
-│       └── views/        # Vue page components
-└── esp32/                # ESP32 RFID scanner firmware
-    └── TagSakay_RFID_Scanner/  # Arduino sketch files
+├── backend-workers/                   # Cloudflare Workers backend
+│   ├── src/
+│   │   ├── db/                        # Drizzle schema and DB helpers
+│   │   ├── durable-objects/           # Worker Durable Object handlers
+│   │   ├── lib/                       # Auth, validation, and utilities
+│   │   ├── middleware/                # Hono middlewares
+│   │   └── routes/                    # API routes
+│   ├── drizzle/                       # SQL migrations
+│   ├── markdowns/                     # Backend documentation
+│   ├── tests/                         # Backend test scripts
+│   ├── package.json
+│   └── wrangler.toml
+├── frontend/                          # Vue + TypeScript admin frontend
+│   ├── public/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── composables/
+│   │   ├── config/
+│   │   ├── router/
+│   │   ├── services/
+│   │   ├── utils/
+│   │   └── views/
+│   ├── package.json
+│   └── vite.config.ts
+├── TagSakay_Fixed_Complete/           # Main ESP32 firmware
+├── TagSakay_LED_Matrix/               # LED matrix firmware
+├── markdowns/                         # Project-level documentation
+├── scripts/                           # Utility scripts
+└── README.md
 ```
 
 ## Features
@@ -296,12 +300,10 @@ The backend-workers implementation follows OWASP Top 10 2021 guidelines:
 
 ## Documentation
 
-- **API Documentation**: `/backend-workers/docs/`
-- **Legacy Backend Docs**: `/backend-workers/docs/legacy/` (archived)
-- **Test Results**: `/backend-workers/tests/TEST_RESULTS.md`
-- **Manual Testing Guide**: `/backend-workers/tests/MANUAL_TESTING_GUIDE.md`
-- **Migration Guide**: `/backend-workers/MIGRATION_SUMMARY.md`
-- **Project Progress**: `/backend-workers/PROGRESS.md`
+- **Project Documentation**: `/markdowns/`
+- **Backend Documentation**: `/backend-workers/markdowns/`
+- **Architecture and Visuals**: `/markdowns/VISUAL_GUIDE.md`, `/markdowns/DFD_TagSakay.md`
+- **Migration Notes**: `/markdowns/WEBSOCKET_TO_HTTP_POLLING_MIGRATION.md`
 - **Copilot Instructions**: `/.github/copilot-instructions.md`
 
 ## Deployment
@@ -334,8 +336,8 @@ npm run build
 
 ## Contributing
 
-This is a private project. Please contact the maintainers for contribution guidelines.
+Contributions are welcome. Please read `CONTRIBUTING.md` for setup, workflow, and repository rules.
 
 ## License
 
-This project is proprietary and confidential.
+This project is licensed under the MIT License. See `LICENSE`.
